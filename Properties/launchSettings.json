@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "Kemibrug.AI.Assistant": {
+      "commandName": "Project",
+      "commandLineArgs": "--port 7221",
+      "launchBrowser": false
+    }
+  }
+}
