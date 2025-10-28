@@ -43,11 +43,16 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_6D56ABD7C4714AABB07F6833BF0A4F8E }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_17C1E9908CE040819706618CEBE0391C }}
 
-      - name: 'Run Azure Functions Action'
-        uses: Azure/functions-action@v1
-        id: fa
+      - name: Configure app settings
+        uses: azure/appservice-settings@v1
         with:
-          app-name: 'kemibrug-ai-assistant-new'
-          slot-name: 'Production'
-          package: '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output'
+          app-name: 'kemibrug-ai-assistant'
+          app-settings-json: |
+            [
+              { "name": "AzureDevOpsPAT",     "value": "${{ secrets.AZURE_DEVOPS_PAT }}",     "slotSetting": false },
+              { "name": "AzureDevOpsOrgUrl",  "value": "${{ secrets.AZURE_DEVOPS_ORG_URL }}", "slotSetting": false },
+              { "name": "AzureOpenAIEndpoint","value": "${{ secrets.AZURE_OPENAI_ENDPOINT }}","slotSetting": false },
+              { "name": "AzureOpenAIApiKey",  "value": "${{ secrets.AZURE_OPENAI_APIKEY }}",  "slotSetting": false }
+            ]
+
           
