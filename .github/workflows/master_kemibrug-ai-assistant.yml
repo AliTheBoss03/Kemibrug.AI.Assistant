@@ -44,7 +44,7 @@ jobs:
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_EEDED23E38AE46698D8D77EF2A384C2C }}
 
       - name: 'Run Azure Functions Action'
-        uses: Azure/functions-action@v2
+        uses: Azure/functions-action@v1
         id: fa
         with:
           app-name: 'kemibrug-ai-assistant'
@@ -57,4 +57,5 @@ jobs:
             AzureOpenAIApiKey: ${{ secrets.AZURE_OPENAI_APIKEY }}
 
           
+
 
