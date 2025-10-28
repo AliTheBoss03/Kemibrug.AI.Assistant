@@ -20,7 +20,7 @@ namespace Kemibrug.AI.Assistant
 
             var openAiEndpoint = Environment.GetEnvironmentVariable("AzureOpenAIEndpoint");
             var openAiKey = Environment.GetEnvironmentVariable("AzureOpenAIApiKey");
-            var deploymentName = "gpt-4o-deployment";
+            var deploymentName = "gpt-4o";
 
             if (string.IsNullOrEmpty(openAiEndpoint) || string.IsNullOrEmpty(openAiKey))
             {
