@@ -46,7 +46,7 @@ jobs:
       - name: Configure app settings
         uses: azure/appservice-settings@v1
         with:
-          app-name: 'kemibrug-ai-assistant'
+          app-name: 'kemibrug-ai-assistant-new'
           app-settings-json: |
             [
               { "name": "AzureDevOpsPAT",     "value": "${{ secrets.AZURE_DEVOPS_PAT }}",     "slotSetting": false },
@@ -56,3 +56,4 @@ jobs:
             ]
 
           
+
