@@ -50,4 +50,10 @@ jobs:
           app-name: 'kemibrug-ai-assistant'
           slot-name: 'Production'
           package: '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output'
+          app-settings: |
+            AzureDevOpsPAT: ${{ secrets.AZURE_DEVOPS_PAT }}
+            AzureDevOpsOrgUrl: ${{ secrets.AZURE_DEVOPS_ORG_URL }}
+            AzureOpenAIEndpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+            AzureOpenAIApiKey: ${{ secrets.AZURE_OPENAI_APIKEY }}
+
           
