@@ -1,5 +1,5 @@
-using System.Threading.Tasks;
 using Kemibrug.AI.Assistant.Models;
+using Kemibrug.AI.Assistant.Models.PR_Models;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.DurableTask;
 using Microsoft.Extensions.Logging;
