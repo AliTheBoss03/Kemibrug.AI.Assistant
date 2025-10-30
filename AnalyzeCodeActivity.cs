@@ -47,39 +47,47 @@
                 };
 
                 options.Messages.Add(new ChatRequestSystemMessage(
-                    "Role: Senior .NET software architect specialized in Onion Architecture. " +
-                    "Task: Review code strictly for ONE rule: Service layer MUST NOT directly instantiate or call repository classes. " +
-                    "All data access must go through an application/service interface (e.g., IProductRepository). " +
-                    "If the rule is violated (e.g., new ProductRepository() inside a service), flag it. " +
-                    "Respond ONLY with a valid JSON object (no prose) matching: " +
-                    "{ \"violationFound\": boolean, \"explanation\": string }"
+                    "role_v2: Senior .NET architect specialized in Onion Architecture for Kemibrug. " +
+                    "You are executing step 2/3 (static analysis) of a prompt chain. " +
+                    "Check ONLY these rules and return JSON:\n" +
+                    "R1 Onion/Layers: (a) Application/Service must NOT instantiate concrete repositories or DbContext; depend only on Core interfaces via DI. " +
+                    "(b) Core MUST NOT reference Application/Infrastructure/WebApiServer. " +
+                    "(c) WebApiServer MUST call Application via interfaces and MUST return DTOs (no domain entities). " +
+                    "(d) Infrastructure MUST NOT contain business logic (persistence/mapping only).\n" +
+                    "R2 DTO rule: API returns DTOs to clients (no domain entities over the wire).\n" +
+                    "R3 DI rule: Dependencies injected (no `new Sql...Repository()`, no `new DbContext()` inside services/controllers).\n" +
+                    "R4 DRY: Flag obvious duplication in THIS file and suggest extraction.\n" +
+                    "R5 SRP: Flag classes/methods doing multiple responsibilities or excessively long methods.\n" +
+                    "Respond ONLY with a valid JSON object (no prose) matching exactly:\n" +
+                    "{ \"violationFound\": boolean,\n" +
+                    "  \"violations\": [\n" +
+                    "    { \"rule\": string, \"principle\": string, \"severity\": \"low\"|\"medium\"|\"high\",\n" +
+                    "      \"lines\": [number], \"evidence\": string, \"suggestion\": string }\n" +
+                    "  ],\n" +
+                    "  \"explanation\": string,\n" +
+                    "  \"meta\": { \"layer\": string, \"promptVersion\": \"2\" }\n" +
+                    "}"
                 ));
 
                 options.Messages.Add(new ChatRequestUserMessage(
-                    @"KORREKT:
-                    public class CorrectOrderService {
-                        private readonly IOrderRepository _orderRepository;
-                    }"
+                    @"CORRECT (Application -> interface via DI):
+                       public class OrderService { private readonly IOrderRepository _repo; public OrderService(IOrderRepository repo){_repo=repo;} }"
                 ));
                 options.Messages.Add(new ChatRequestAssistantMessage(
-                    @"{""violationFound"": false, ""explanation"": ""Uses interface IOrderRepository; no direct repo instantiation.""}"
+                    @"{""violationFound"":false,""violations"":[],""explanation"":""Service depends on interface via DI."",""meta"":{""layer"":""Application"",""promptVersion"":""2""}}"
                 ));
 
                 options.Messages.Add(new ChatRequestUserMessage(
-                    @"FORKERT:
-                    public class WrongProductService {
-                        public Product GetProduct(int id) {
-                            var repo = new ProductRepository(); // direkte repo i service
-                            return repo.GetById(id);
-                        }
-                    }"));
+                    @"WRONG (Application -> concrete repo):
+                    public class WrongService { public Product Get(int id){ var repo = new ProductRepository(); return repo.GetById(id);} }"
+                ));
                 options.Messages.Add(new ChatRequestAssistantMessage(
-                    @"{""violationFound"": true, ""explanation"": ""Service layer instantiates ProductRepository directly instead of using interface.""}"
+                    @"{""violationFound"":true,""violations"":[{""rule"":""Service uses concrete repository"",""principle"":""Onion/DI"",""severity"":""high"",""lines"":[1,2,3],""evidence"":""new ProductRepository() inside Application service"",""suggestion"":""Inject IProductRepository via constructor and depend on Core interface only""}],""explanation"":""Direct repo instantiation in Application."",""meta"":{""layer"":""Application"",""promptVersion"":""2""}}"
                 ));
 
                 // Selve koden fra PR
                 options.Messages.Add(new ChatRequestUserMessage(
-                    "Analyze ONLY the following C# code for the specified rule. Output JSON only.\n\n```csharp\n" +
+                    "Layer=Application. Analyze ONLY the following C# code for rules R1–R5. Output JSON only.\n\n```csharp\n" +
                     codeToAnalyze + "\n```"
                 ));
 
