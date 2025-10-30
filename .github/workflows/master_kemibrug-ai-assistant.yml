@@ -53,8 +53,8 @@ jobs:
               { "name": "AzureDevOpsOrgUrl",   "value": "${{ secrets.AZURE_DEVOPS_ORG_URL }}",  "slotSetting": false },
               { "name": "AzureOpenAIEndpoint", "value": "${{ secrets.AZURE_OPENAI_ENDPOINT }}", "slotSetting": false },
               { "name": "AzureOpenAIApiKey",   "value": "${{ secrets.AZURE_OPENAI_APIKEY }}",   "slotSetting": false },
-              { "name": "AZUREDEVOPSREPOSITORYNAME",   "value": "${{ secrets.AZUREDEVOPSREPOSITORYNAME }}",   "slotSetting": false },
-              { "name": "AZUREDEVOPSPROJECT",   "value": "${{ secrets.AZUREDEVOPSPROJECT }}",   "slotSetting": false }
+              { "name": "AzureDevOpsRepositoryName",   "value": "${{ secrets.AZUREDEVOPSREPOSITORYNAME }}",   "slotSetting": false },
+              { "name": "AzureDevOpsProject",   "value": "${{ secrets.AZUREDEVOPSPROJECT }}",   "slotSetting": false }
             ]
 
       - name: 'Run Azure Functions Action'
@@ -66,4 +66,5 @@ jobs:
           package: '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output'
 
           
+
 
