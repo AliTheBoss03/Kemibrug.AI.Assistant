@@ -26,7 +26,9 @@ namespace Kemibrug.AI.Assistant
 
             // Læs den indkommende JSON-data fra Azure DevOps
             string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
-            var webhookData = JsonSerializer.Deserialize<PullRequestWebhookPayload>(requestBody);
+            var webhookData = JsonSerializer.Deserialize<PullRequestWebhookPayload>(
+                requestBody,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
             // Tjek om vi fik de nødvendige data
             if (webhookData?.Resource == null || webhookData.Resource.PullRequestId == 0)
