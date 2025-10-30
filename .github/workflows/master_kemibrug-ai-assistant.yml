@@ -15,7 +15,7 @@ env:
 
 jobs:
   build-and-deploy:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     permissions:
       id-token: write #This is required for requesting the JWT
       contents: read #This is required for actions/checkout
@@ -44,7 +44,7 @@ jobs:
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_BE4AA3B5668B4EFD94873CB496000E0A }}
         
       - name: Configure app settings
-        uses: azure/appservice-settings@v1
+        uses: azure/CLI@v1
         with:
           inlineScript: |
             az functionapp config appsettings set \
@@ -67,6 +67,7 @@ jobs:
           package: '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output'
 
           
+
 
 
 
