@@ -26,7 +26,7 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
       # =========================
-      # Build docs.json (plain text "content")
+      # Build docs.json (plain text content)
       # =========================
       - name: Build docs.json (plain text content)
         shell: bash
@@ -41,14 +41,7 @@ jobs:
           sudo apt-get update -y >/dev/null
           sudo apt-get install -y jq >/dev/null
 
-          urlencode() {
-            python3 - <<'PY'
-            import sys, urllib.parse
-            print(urllib.parse.quote(sys.stdin.read().strip(), safe="/._-"))
-            PY
-          }
-
-          # --- Map of README paths -> layer name ---
+          # Map of README paths -> layer name
           declare -A FILES
           FILES["/src/KemibrugV2.Application/README.md"]="Application"
           FILES["/src/KemibrugV2.Core/README.md"]="Core"
@@ -56,37 +49,38 @@ jobs:
           FILES["/src/KemibrugV2.WebApiServer/README.md"]="WebApiServer"
 
           PROJECT="KemibrugV2"
+          BASE="${AZDO_ORG_URL}/${AZDO_PROJECT}/_apis/git/repositories/${AZDO_REPO}/items"
 
-          # Start docs.json
           echo '{ "value": [] }' > docs.json
 
           ok=0; fail=0
           for path in "${!FILES[@]}"; do
             layer="${FILES[$path]}"
-            enc_path=$(printf "%s" "$path" | urlencode)
 
-            # Raw file content (download=true) from a specific branch (master). Change if needed.
-            URL="${AZDO_ORG_URL}/${AZDO_PROJECT}/_apis/git/repositories/${AZDO_REPO}/items?path=${enc_path}&download=true&versionDescriptor.version=master&api-version=7.1-preview.1"
+            # Use curl GET with data-urlencode for the path (no heredocs)
+            http_code=$(curl -sS -u ":${AZDO_PAT}" \
+              --get "$BASE" \
+              --data-urlencode "path=${path}" \
+              --data "download=true" \
+              --data "versionDescriptor.version=master" \
+              --data "api-version=7.1-preview.1" \
+              -o _file.tmp -w "%{http_code}" || true)
 
-            echo "GET $URL"
-            http_code=$(curl -sS -u ":${AZDO_PAT}" -w "%{http_code}" -o _file.tmp "$URL" || true)
-            echo "HTTP $http_code"
+            echo "GET $BASE?path=${path} -> HTTP ${http_code}"
 
             if [ "$http_code" != "200" ]; then
-              echo "WARN: Could not fetch $path (HTTP $http_code)"
+              echo "WARN: Could not fetch ${path} (HTTP ${http_code})"
               rm -f _file.tmp
               fail=$((fail+1))
               continue
             fi
 
-            # JSON-escape raw content
+            # JSON-escape raw content to a plain-text "content" field
             content_json=$(jq -Rs . < _file.tmp)
             rm -f _file.tmp
 
-            # Stable id from path
             id=$(echo "$path" | sed 's/[^a-zA-Z0-9._-]/_/g')
 
-            # Append to docs.json.value[]
             tmp=$(mktemp)
             jq --arg id "$id" \
                --arg path "$path" \
@@ -97,7 +91,7 @@ jobs:
                docs.json > "$tmp"
             mv "$tmp" docs.json
 
-            echo "OK: added $path -> id=$id, layer=$layer"
+            echo "OK: added ${path} -> id=${id}, layer=${layer}"
             ok=$((ok+1))
           done
 
@@ -137,7 +131,7 @@ jobs:
           echo "HTTP $http"
           echo "Response:"
           cat upload_resp.json
-          # basic sanity: ensure at least 1 item processed
+          # sanity: ensure at least 1 item processed
           jq '.value | length' upload_resp.json | grep -q '^[1-9]' || { echo "No docs indexed"; exit 2; }
 
       # =========================
