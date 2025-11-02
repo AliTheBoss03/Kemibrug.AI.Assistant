@@ -32,12 +32,12 @@ jobs:
       # =========================
       # 0) Resolve ADO Project/Repo IDs
       # =========================
-      - name: Resolve Azure DevOps ProjectId and RepoId
+      - name: Resolve Azure DevOps ProjectId and RepoId (robust)
         shell: bash
         env:
           ORG_URL: ${{ secrets.AZURE_DEVOPS_ORG_URL }}      # e.g. https://dev.azure.com/Custom-Web-Solutions
           PAT:     ${{ secrets.AZURE_DEVOPS_PAT }}
-          PROJECT: ${{ secrets.AZUREDEVOPSPROJECT }}        # project name (exact)
+          PROJECT: ${{ secrets.AZUREDEVOPSPROJECT }}        # exact project name
           REPO:    ${{ secrets.AZUREDEVOPSREPOSITORYNAME }} # repo NAME or GUID
         run: |
           set -euo pipefail
@@ -48,11 +48,15 @@ jobs:
             exit 2
           fi
 
-          # Get ProjectId by project name
+          echo "Diag: ORG_URL=${ORG_URL}"
+          echo "Diag: PROJECT=${PROJECT}"
+          echo "Diag: REPO=${REPO}"
+
+          # --- 1) List projects (with curl -v for TLS/DNS debug) ---
           PROJ_URL="${ORG_URL%/}/_apis/projects?api-version=7.1-preview.4"
           echo "GET $PROJ_URL"
           PROJ_BODY=$(mktemp)
-          PROJ_CODE=$(curl -sS -L --fail-with-body -u :$PAT -w "%{http_code}" -o "$PROJ_BODY" "$PROJ_URL" || true)
+          PROJ_CODE=$(curl -v -sS -L --fail-with-body -u :$PAT -w "%{http_code}" -o "$PROJ_BODY" "$PROJ_URL" || true)
           echo "HTTP status (projects): $PROJ_CODE"
           if [ "$PROJ_CODE" != "200" ]; then
             echo "::error::Could not list projects (HTTP $PROJ_CODE)"
@@ -60,7 +64,7 @@ jobs:
             exit 3
           fi
 
-          # Find project by exact name (case-sensitive match)
+          # Find ProjectId by exact name
           PROJECT_ID=$(jq -r --arg NAME "$PROJECT" '.value[] | select(.name == $NAME) | .id' < "$PROJ_BODY")
           rm -f "$PROJ_BODY"
 
@@ -71,19 +75,20 @@ jobs:
           echo "Resolved ProjectId: $PROJECT_ID"
           echo "RESOLVED_PROJECT_ID=$PROJECT_ID" >> $GITHUB_ENV
 
-          # List repos within project and resolve RepoId (by name or accept GUID as-is)
-          REPOS_URL="${ORG_URL%/}/$PROJECT/_apis/git/repositories?api-version=7.1-preview.1"
+          # --- 2) List repos using ProjectId in the path (safer for spaces) ---
+          REPOS_URL="${ORG_URL%/}/${PROJECT_ID}/_apis/git/repositories?api-version=7.1-preview.1"
           echo "GET $REPOS_URL"
           REPOS_BODY=$(mktemp)
-          REPOS_CODE=$(curl -sS -L --fail-with-body -u :$PAT -w "%{http_code}" -o "$REPOS_BODY" "$REPOS_URL" || true)
+          REPOS_CODE=$(curl -v -sS -L --fail-with-body -u :$PAT -w "%{http_code}" -o "$REPOS_BODY" "$REPOS_URL" || true)
           echo "HTTP status (repos): $REPOS_CODE"
           if [ "$REPOS_CODE" != "200" ]; then
             echo "::error::Could not list repositories (HTTP $REPOS_CODE)"
             head -c 400 "$REPOS_BODY" || true; echo
+            echo "Hint: Check ORG_URL (must be https://dev.azure.com/<org>), PAT scopes (Code: Read), and that the PAT user has access to the project."
             exit 3
           fi
 
-          # If REPO looks like a GUID, trust it; else match by name
+          # If REPO looks like a GUID, accept; else resolve by name
           if [[ "$REPO" =~ ^[0-9a-fA-F-]{36}$ ]]; then
             REPO_ID="$REPO"
           else
@@ -93,10 +98,16 @@ jobs:
 
           if [ -z "$REPO_ID" ] || [ "$REPO_ID" = "null" ]; then
             echo "::error::Repository '$REPO' not found in project '$PROJECT'."
+            echo "Repos available:" 
+            # print a handful of repo names to help debugging
+            REPOS_LIST_URL="${ORG_URL%/}/${PROJECT_ID}/_apis/git/repositories?api-version=7.1-preview.1"
+            curl -sS -L -u :$PAT "$REPOS_LIST_URL" | jq -r '.value[].name' | head -n 50 || true
             exit 3
           fi
+
           echo "Resolved RepoId: $REPO_ID"
           echo "RESOLVED_REPO_ID=$REPO_ID" >> $GITHUB_ENV
+
 
       # =========================
       # (Optional) Show a few paths safely (no pipes => no SIGPIPE)
@@ -298,3 +309,4 @@ jobs:
           app-name: 'kemibrug-ai-assistant'
           slot-name: 'Production'
           package: '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output'
+
