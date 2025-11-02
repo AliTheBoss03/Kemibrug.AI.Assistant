@@ -2,13 +2,13 @@ name: Build and deploy dotnet core app to Azure Function App - kemibrug-ai-assis
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
   workflow_dispatch:
 
 env:
   AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
   DOTNET_VERSION: '8.0.x'
-  BRANCH: 'master'   # change to 'main' if your default branch is main
+  BRANCH: 'main'
 
 jobs:
   build-and-deploy:
@@ -26,7 +26,7 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Ensure tools
+      - name: Ensure tools (jq, python3)
         shell: bash
         run: |
           set -e
@@ -38,9 +38,9 @@ jobs:
         id: ado
         shell: bash
         env:
-          ORG_URL:  ${{ secrets.AZURE_DEVOPS_ORG_URL }}       # e.g. https://dev.azure.com/Custom-Web-Solutions
-          PROJECT:  ${{ secrets.AZUREDEVOPSPROJECT }}         # exact project name, may contain spaces
-          REPO_IN:  ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}  # repo name OR GUID
+          ORG_URL:  ${{ secrets.AZURE_DEVOPS_ORG_URL }}       # fx https://dev.azure.com/Custom-Web-Solutions
+          PROJECT:  ${{ secrets.AZUREDEVOPSPROJECT }}         # præcist projektnavn (kan have mellemrum)
+          REPO_IN:  ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}  # repo NAVN eller GUID
           PAT:      ${{ secrets.AZURE_DEVOPS_PAT }}
         run: |
           set -euo pipefail
@@ -53,26 +53,21 @@ jobs:
             exit 3
           fi
 
-          # URL-encode the project segment (handles spaces and non-ASCII safely)
-          PROJECT_ENC="$(python3 - <<'PY'
-            import os, urllib.parse
-            print(urllib.parse.quote(os.environ["PROJECT"], safe=""))
-            PY
-          )"
+          # URL-encode projektsegmentet uden heredoc
+          PROJECT_ENC="$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT")"
           BASE_LIST_URL="${ORG_URL%/}/${PROJECT_ENC}/_apis/git/repositories?api-version=7.1-preview.1"
 
-          # If REPO_IN looks like a GUID, use as-is
+          # Hvis REPO_IN ligner en GUID, brug den direkte
           if [[ "$REPO_IN" =~ ^[0-9a-fA-F-]{36}$ ]]; then
             REPO_ID="$REPO_IN"
             echo "Using provided repo GUID: $REPO_ID"
           else
             echo "GET $BASE_LIST_URL"
             resp="$(curl -sS -f -u :$PAT "$BASE_LIST_URL")" || { echo "ERROR: curl failed listing repos"; exit 3; }
-            echo "$resp" | jq -e . >/dev/null || { echo "ERROR: Non-JSON response listing repos"; echo "$resp"; exit 3; }
+            echo "$resp" | jq -e . >/dev/null || { echo "ERROR: Non-JSON listing repos"; echo "$resp"; exit 3; }
             REPO_ID="$(echo "$resp" | jq -r --arg name "$REPO_IN" '.value[] | select(.name==$name) | .id' | head -n1)"
             if [ -z "$REPO_ID" ] || [ "$REPO_ID" = "null" ]; then
-              echo "ERROR: Could not find repository named '$REPO_IN' in project '$PROJECT'."
-              echo "Available repos:"
+              echo "ERROR: Could not find repository named '$REPO_IN' in project '$PROJECT'. Available repos:"
               echo "$resp" | jq -r '.value[] | "\(.name)  \(.id)"'
               exit 3
             fi
@@ -82,7 +77,7 @@ jobs:
           echo "repo_id=$REPO_ID" >> "$GITHUB_OUTPUT"
           echo "project_enc=$PROJECT_ENC" >> "$GITHUB_OUTPUT"
 
-      # ---------- Fetch four README.md files as raw bytes and build docs.json ----------
+      # ---------- Hent README.md-filer og byg docs.json ----------
       - name: Build docs.json from ADO READMEs
         shell: bash
         env:
@@ -167,7 +162,7 @@ jobs:
           name: docs-json
           path: docs.json
 
-      # ---------- Push docs to Azure AI Search ----------
+      # ---------- Push docs til Azure AI Search ----------
       - name: Push docs to Azure AI Search
         shell: bash
         env:
