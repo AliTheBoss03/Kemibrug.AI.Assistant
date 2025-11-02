@@ -2,13 +2,13 @@ name: Build and deploy dotnet core app to Azure Function App - kemibrug-ai-assis
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
   workflow_dispatch:
 
 env:
   AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
   DOTNET_VERSION: '8.0.x'
-  BRANCH: 'master'   # change to 'main' if needed
+  BRANCH: 'master'   # change to 'main' if your default branch is main
 
 jobs:
   build-and-deploy:
@@ -31,7 +31,7 @@ jobs:
         run: |
           set -e
           sudo apt-get update -y
-          sudo apt-get install -y jq >/dev/null
+          sudo apt-get install -y jq python3 >/dev/null
 
       # ---------- Resolve Azure DevOps repo ID (accept name or GUID) ----------
       - name: Resolve ADO repo ID
@@ -39,7 +39,7 @@ jobs:
         shell: bash
         env:
           ORG_URL:  ${{ secrets.AZURE_DEVOPS_ORG_URL }}       # e.g. https://dev.azure.com/Custom-Web-Solutions
-          PROJECT:  ${{ secrets.AZUREDEVOPSPROJECT }}         # exact project name
+          PROJECT:  ${{ secrets.AZUREDEVOPSPROJECT }}         # exact project name, may contain spaces
           REPO_IN:  ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}  # repo name OR GUID
           PAT:      ${{ secrets.AZURE_DEVOPS_PAT }}
         run: |
@@ -53,21 +53,26 @@ jobs:
             exit 3
           fi
 
+          # URL-encode the project segment (handles spaces and non-ASCII safely)
+          PROJECT_ENC="$(python3 - <<'PY'
+            import os, urllib.parse
+            print(urllib.parse.quote(os.environ["PROJECT"], safe=""))
+            PY
+          )"
+          BASE_LIST_URL="${ORG_URL%/}/${PROJECT_ENC}/_apis/git/repositories?api-version=7.1-preview.1"
+
           # If REPO_IN looks like a GUID, use as-is
           if [[ "$REPO_IN" =~ ^[0-9a-fA-F-]{36}$ ]]; then
             REPO_ID="$REPO_IN"
             echo "Using provided repo GUID: $REPO_ID"
           else
-            # Look up by name to get ID
-            list_url="${ORG_URL%/}/${PROJECT}/_apis/git/repositories?api-version=7.1-preview.1"
-            echo "GET $list_url"
-            resp="$(curl -sS -u :$PAT "$list_url")" || { echo "ERROR: curl failed listing repos"; exit 3; }
-            # fail early if not JSON
+            echo "GET $BASE_LIST_URL"
+            resp="$(curl -sS -f -u :$PAT "$BASE_LIST_URL")" || { echo "ERROR: curl failed listing repos"; exit 3; }
             echo "$resp" | jq -e . >/dev/null || { echo "ERROR: Non-JSON response listing repos"; echo "$resp"; exit 3; }
             REPO_ID="$(echo "$resp" | jq -r --arg name "$REPO_IN" '.value[] | select(.name==$name) | .id' | head -n1)"
             if [ -z "$REPO_ID" ] || [ "$REPO_ID" = "null" ]; then
               echo "ERROR: Could not find repository named '$REPO_IN' in project '$PROJECT'."
-              echo "Available repos:" 
+              echo "Available repos:"
               echo "$resp" | jq -r '.value[] | "\(.name)  \(.id)"'
               exit 3
             fi
@@ -75,16 +80,17 @@ jobs:
           fi
 
           echo "repo_id=$REPO_ID" >> "$GITHUB_OUTPUT"
+          echo "project_enc=$PROJECT_ENC" >> "$GITHUB_OUTPUT"
 
-      # ---------- Fetch four README.md files as raw bytes (octet-stream) and build docs.json ----------
+      # ---------- Fetch four README.md files as raw bytes and build docs.json ----------
       - name: Build docs.json from ADO READMEs
         shell: bash
         env:
-          ORG_URL:   ${{ secrets.AZURE_DEVOPS_ORG_URL }}
-          PROJECT:   ${{ secrets.AZUREDEVOPSPROJECT }}
-          REPO_ID:   ${{ steps.ado.outputs.repo_id }}
-          PAT:       ${{ secrets.AZURE_DEVOPS_PAT }}
-          BRANCH:    ${{ env.BRANCH }}
+          ORG_URL:     ${{ secrets.AZURE_DEVOPS_ORG_URL }}
+          PROJECT_ENC: ${{ steps.ado.outputs.project_enc }}
+          REPO_ID:     ${{ steps.ado.outputs.repo_id }}
+          PAT:         ${{ secrets.AZURE_DEVOPS_PAT }}
+          BRANCH:      ${{ env.BRANCH }}
         run: |
           set -euo pipefail
 
@@ -94,30 +100,26 @@ jobs:
           FILES["/src/KemibrugV2.Infrastructure/README.md"]="Infrastructure"
           FILES["/src/KemibrugV2.WebApiServer/README.md"]="WebApiServer"
 
-          base="${ORG_URL%/}/${PROJECT}/_apis/git/repositories/${REPO_ID}/items"
+          BASE="${ORG_URL%/}/${PROJECT_ENC}/_apis/git/repositories/${REPO_ID}/items"
 
-          # small retry helper
           fetch_file() {
             local path="$1"
-            local tries=3
             local tmp="$(mktemp)"
             local code
-            for i in $(seq 1 $tries); do
-              code=$(curl -sS -L -u :$PAT -w "%{http_code}" -o "$tmp" \
-                -H "Accept: application/octet-stream" \
-                -G \
-                --data-urlencode "path=${path}" \
-                --data-urlencode "versionDescriptor.version=${BRANCH}" \
-                --data-urlencode "api-version=7.1-preview.1" \
-                "$base" || true)
-              echo "GET ${base}?path=<encoded>&versionDescriptor.version=${BRANCH} -> HTTP ${code} for ${path}"
-              if [ "$code" = "200" ]; then
-                cat "$tmp"
-                rm -f "$tmp"
-                return 0
-              fi
-              sleep 1
-            done
+            code=$(curl -sS -L -u :$PAT -w "%{http_code}" -o "$tmp" \
+              -H "Accept: application/octet-stream" \
+              -G \
+              --data-urlencode "path=${path}" \
+              --data-urlencode "versionDescriptor.version=${BRANCH}" \
+              --data-urlencode "api-version=7.1-preview.1" \
+              "$BASE" || true)
+            echo "GET ${BASE}?path=<encoded>&versionDescriptor.version=${BRANCH} -> HTTP ${code} for ${path}"
+            if [ "$code" = "200" ]; then
+              cat "$tmp"
+              rm -f "$tmp"
+              return 0
+            fi
+            cat "$tmp" >&2 || true
             rm -f "$tmp"
             return 22
           }
@@ -128,13 +130,10 @@ jobs:
 
           for p in "${!FILES[@]}"; do
             layer="${FILES[$p]}"
-            content="$(fetch_file "$p" || true)"
-            if [ -z "$content" ]; then
+            if ! content="$(fetch_file "$p")"; then
               echo "WARN: Could not fetch $p"
               continue
             fi
-
-            # base64 encode (one line)
             b64="$(printf "%s" "$content" | base64 -w0)"
             id="$(echo "$p" | sed 's/[^a-zA-Z0-9._-]/_/g')"
 
