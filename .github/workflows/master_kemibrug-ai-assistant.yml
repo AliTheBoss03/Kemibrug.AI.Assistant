@@ -17,16 +17,15 @@ jobs:
       contents: read
 
     steps:
-      - name: "Checkout"
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: "Setup .NET"
+      - name: Setup .NET
         uses: actions/setup-dotnet@v1
         with:
           dotnet-version: "${{ env.DOTNET_VERSION }}"
 
-      # --- BASIC ENV CHECKS ---
-      - name: "Sanity check secrets (lengths only)"
+      - name: Sanity check secrets (lengths only)
         shell: bash
         run: |
           set -e
@@ -35,34 +34,30 @@ jobs:
           showlen "${{ secrets.AZUREDEVOPSPROJECT }}"   "AZUREDEVOPSPROJECT_len"
           showlen "${{ secrets.AZURE_DEVOPS_PAT }}"     "AZURE_DEVOPS_PAT_len"
           showlen "${{ secrets.AZUREDEVOPSREPOSITORYNAME }}" "AZUREDEVOPSREPOSITORYNAME_len"
-          # Quick DNS reachability
           echo "Resolving dev.azure.com..."
           getent hosts dev.azure.com || true
 
-      # --- RESOLVE projectId and repoId safely ---
-      - name: "Resolve Azure DevOps project and repository IDs"
+      - name: Resolve Azure DevOps project and repository IDs
         id: resolve_ids
         shell: bash
         env:
-          ORG_URL:   ${{ secrets.AZURE_DEVOPS_ORG_URL }}
-          PROJ_NAME: ${{ secrets.AZUREDEVOPSPROJECT }}
-          REPO_HINT: ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}
-          PAT:       ${{ secrets.AZURE_DEVOPS_PAT }}
+          ORG_URL:  ${{ secrets.AZURE_DEVOPS_ORG_URL }}        # e.g. https://dev.azure.com/Custom-Web-Solutions
+          PROJ_NAME: ${{ secrets.AZUREDEVOPSPROJECT }}         # exact project name
+          REPO_HINT: ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}  # repo name OR repo ID
+          PAT:      ${{ secrets.AZURE_DEVOPS_PAT }}            # PAT with Code(Read)
         run: |
           set -euo pipefail
           sudo apt-get update -y && sudo apt-get install -y jq python3
 
-          # Normalize ORG_URL (strip trailing slash)
           ORG_URL="${ORG_URL%/}"
 
-          # 1) Fetch all projects to resolve projectId by name
+          # 1) Get projects
           PROJ_URL="${ORG_URL}/_apis/projects?api-version=7.1-preview.1"
           echo "GET $PROJ_URL"
           P_BODY=$(mktemp)
           P_STATUS=$(curl -sS -L --fail-with-body -u :$PAT -w "%{http_code}" -o "$P_BODY" "$PROJ_URL" || true)
           echo "Projects HTTP status: $P_STATUS"
           if [ "$P_STATUS" != "200" ]; then
-            echo "---- projects body (first 400 bytes) ----"
             head -c 400 "$P_BODY" || true; echo
             echo "::error::Failed to list projects. Check ORG_URL and PAT scope (Code: Read)."
             exit 3
@@ -73,19 +68,16 @@ jobs:
             exit 3
           fi
 
-          # Try exact name match
           PROJECT_ID=$(jq -r --arg n "$PROJ_NAME" '.value[] | select(.name==$n) | .id' < "$P_BODY")
           if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
-            echo "::warning::Exact project name not found. Available projects:"
-            jq -r '.value[].name' < "$P_BODY" | sed 's/^/  - /'
+            echo "::warning::Available projects:"; jq -r '.value[].name' < "$P_BODY" | sed 's/^/  - /'
             echo "::error::Project name mismatch: '$PROJ_NAME'"
             exit 3
           fi
           echo "Resolved projectId: $PROJECT_ID"
           echo "RESOLVED_PROJECT_ID=$PROJECT_ID" >> "$GITHUB_ENV"
 
-          # 2) Resolve repository ID
-          # If REPO_HINT looks like a GUID, assume it's already the ID
+          # 2) Resolve repo ID
           if [[ "$REPO_HINT" =~ ^[0-9a-fA-F-]{36}$ ]]; then
             REPO_ID="$REPO_HINT"
             echo "Using provided repository ID: $REPO_ID"
@@ -96,37 +88,29 @@ jobs:
             R_STATUS=$(curl -sS -L --fail-with-body -u :$PAT -w "%{http_code}" -o "$R_BODY" "$R_URL" || true)
             echo "Repos HTTP status: $R_STATUS"
             if [ "$R_STATUS" != "200" ]; then
-              echo "---- repos body (first 400 bytes) ----"
               head -c 400 "$R_BODY" || true; echo
               echo "::error::Failed to list repositories."
               exit 3
             fi
             if ! jq -e . >/dev/null 2>&1 < "$R_BODY"; then
-              echo "::error::Repos response not JSON"
-              head -c 400 "$R_BODY" || true
-              exit 3
+              echo "::error::Repos response not JSON"; head -c 400 "$R_BODY" || true; exit 3
             fi
-            # match by name (case-sensitive)
             REPO_ID=$(jq -r --arg n "$REPO_HINT" '.value[] | select(.name==$n) | .id' < "$R_BODY")
             if [ -z "$REPO_ID" ] || [ "$REPO_ID" = "null" ]; then
-              echo "::warning::Exact repo name not found. Available repos:"
-              jq -r '.value[] | "  - \(.name)  (\(.id))"' < "$R_BODY"
-              echo "::error::Repository name mismatch: '$REPO_HINT'"
-              exit 3
+              echo "::warning::Available repos:"; jq -r '.value[] | "  - \(.name)  (\(.id))"' < "$R_BODY"
+              echo "::error::Repository name mismatch: '$REPO_HINT'"; exit 3
             fi
             echo "Resolved repoId: $REPO_ID"
           fi
           echo "RESOLVED_REPO_ID=$REPO_ID" >> "$GITHUB_ENV"
 
-      # --- OPTIONAL: list a few paths for confirmation ---
-      - name: "List a few repo paths under / and /src"
+      - name: List a few repo paths under / and /src (non-fatal)
         shell: bash
         env:
           ORG_URL: ${{ secrets.AZURE_DEVOPS_ORG_URL }}
           PAT:     ${{ secrets.AZURE_DEVOPS_PAT }}
         run: |
-          set -e
-          sudo apt-get update -y && sudo apt-get install -y jq
+          sudo apt-get update -y && sudo apt-get install -y jq >/dev/null
           for scope in "/" "/src"; do
             URL="${ORG_URL%/}/${RESOLVED_PROJECT_ID}/_apis/git/repositories/${RESOLVED_REPO_ID}/items?scopePath=${scope}&recursionLevel=Full&\$top=2000&api-version=7.1-preview.1"
             echo "GET $URL"
@@ -138,11 +122,11 @@ jobs:
             else
               echo "---- body (first 400 bytes) ----"
               head -c 400 "$BODY" || true; echo
+              echo "::warning::Could not list items for scopePath=${scope} (HTTP $STATUS). Continuing…"
             fi
           done
 
-      # --- FETCH README files and build docs.json ---
-      - name: "Fetch READMEs and build docs.json"
+      - name: Fetch READMEs and build docs.json
         shell: bash
         env:
           ORG_URL: ${{ secrets.AZURE_DEVOPS_ORG_URL }}
@@ -158,7 +142,6 @@ jobs:
             PY
           }
 
-          # Adjust these if your paths differ
           declare -A FILES
           FILES["/src/KemibrugV2.Application/README.md"]="Application"
           FILES["/src/KemibrugV2.Core/README.md"]="Core"
@@ -233,17 +216,17 @@ jobs:
             exit 2
           fi
 
-      - name: "Upload docs.json artifact (debug)"
+      - name: Upload docs.json artifact (debug)
         uses: actions/upload-artifact@v4
         with:
           name: docs-json
           path: docs.json
 
-      - name: "Push docs to Azure AI Search"
+      - name: Push docs to Azure AI Search
         shell: bash
         env:
-          SEARCH_ENDPOINT: ${{ secrets.AZURE_SEARCH_ENDPOINT }}
-          SEARCH_INDEX:    ${{ secrets.AZURE_SEARCH_INDEX }}
+          SEARCH_ENDPOINT: ${{ secrets.AZURE_SEARCH_ENDPOINT }}   # https://<svc>.search.windows.net
+          SEARCH_INDEX:    ${{ secrets.AZURE_SEARCH_INDEX }}      # e.g. kemibrug-rules
           SEARCH_KEY:      ${{ secrets.AZURE_SEARCH_ADMIN_KEY }}
         run: |
           set -e
@@ -254,22 +237,21 @@ jobs:
             "${SEARCH_ENDPOINT}/indexes/${SEARCH_INDEX}/docs/index?api-version=2023-11-01"
           echo "Uploaded README docs to Azure AI Search."
 
-      # --- BUILD & DEPLOY FUNCTIONS ---
-      - name: "Build"
+      - name: Build
         shell: pwsh
         run: |
           pushd "./${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}"
           dotnet build --configuration Release --output ./output
           popd
 
-      - name: "Login to Azure"
+      - name: Login to Azure
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_CC61583FBBEC4600B796FAECBE66F119 }}
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_4FAB11EB01304BE09563B7410BD1E837 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_BE4AA3B5668B4EFD94873CB496000E0A }}
 
-      - name: "Configure app settings"
+      - name: Configure app settings
         uses: azure/CLI@v1
         with:
           inlineScript: |
@@ -288,11 +270,9 @@ jobs:
                 AzureSearchApiKey='${{ secrets.AZURE_SEARCH_ADMIN_KEY }}' \
                 AnalysisSystemPromptV2='${{ secrets.ANALYSIS_SYSTEM_PROMPT_V2 }}'
 
-      - name: "Deploy to Azure Functions"
+      - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
         with:
           app-name: "kemibrug-ai-assistant"
           slot-name: "Production"
           package: "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output"
-
-
