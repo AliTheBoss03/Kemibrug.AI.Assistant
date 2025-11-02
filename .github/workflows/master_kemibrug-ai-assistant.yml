@@ -2,13 +2,13 @@ name: Build and deploy dotnet core app to Azure Function App - kemibrug-ai-assis
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
   workflow_dispatch:
 
 env:
   AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
   DOTNET_VERSION: '8.0.x'
-  BRANCH: 'master'   # <-- change to 'main' if that's your default
+  BRANCH: 'master'   # change to 'main' if needed
 
 jobs:
   build-and-deploy:
@@ -21,7 +21,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+      - name: Setup .NET
         uses: actions/setup-dotnet@v1
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
@@ -33,31 +33,94 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y jq >/dev/null
 
-      # ---- Build docs.json from ADO (fetch 4 README.md precisely) ----
+      # ---------- Resolve Azure DevOps repo ID (accept name or GUID) ----------
+      - name: Resolve ADO repo ID
+        id: ado
+        shell: bash
+        env:
+          ORG_URL:  ${{ secrets.AZURE_DEVOPS_ORG_URL }}       # e.g. https://dev.azure.com/Custom-Web-Solutions
+          PROJECT:  ${{ secrets.AZUREDEVOPSPROJECT }}         # exact project name
+          REPO_IN:  ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}  # repo name OR GUID
+          PAT:      ${{ secrets.AZURE_DEVOPS_PAT }}
+        run: |
+          set -euo pipefail
+          echo "ORG_URL=$ORG_URL"
+          echo "PROJECT=$PROJECT"
+          echo "REPO_IN=$REPO_IN"
+
+          if [ -z "${ORG_URL:-}" ] || [ -z "${PROJECT:-}" ] || [ -z "${REPO_IN:-}" ] || [ -z "${PAT:-}" ]; then
+            echo "ERROR: Missing ORG_URL/PROJECT/REPO_IN/PAT"
+            exit 3
+          fi
+
+          # If REPO_IN looks like a GUID, use as-is
+          if [[ "$REPO_IN" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            REPO_ID="$REPO_IN"
+            echo "Using provided repo GUID: $REPO_ID"
+          else
+            # Look up by name to get ID
+            list_url="${ORG_URL%/}/${PROJECT}/_apis/git/repositories?api-version=7.1-preview.1"
+            echo "GET $list_url"
+            resp="$(curl -sS -u :$PAT "$list_url")" || { echo "ERROR: curl failed listing repos"; exit 3; }
+            # fail early if not JSON
+            echo "$resp" | jq -e . >/dev/null || { echo "ERROR: Non-JSON response listing repos"; echo "$resp"; exit 3; }
+            REPO_ID="$(echo "$resp" | jq -r --arg name "$REPO_IN" '.value[] | select(.name==$name) | .id' | head -n1)"
+            if [ -z "$REPO_ID" ] || [ "$REPO_ID" = "null" ]; then
+              echo "ERROR: Could not find repository named '$REPO_IN' in project '$PROJECT'."
+              echo "Available repos:" 
+              echo "$resp" | jq -r '.value[] | "\(.name)  \(.id)"'
+              exit 3
+            fi
+            echo "Resolved repo '$REPO_IN' -> $REPO_ID"
+          fi
+
+          echo "repo_id=$REPO_ID" >> "$GITHUB_OUTPUT"
+
+      # ---------- Fetch four README.md files as raw bytes (octet-stream) and build docs.json ----------
       - name: Build docs.json from ADO READMEs
         shell: bash
         env:
-          ORG_URL:    ${{ secrets.AZURE_DEVOPS_ORG_URL }}        # e.g. https://dev.azure.com/Custom-Web-Solutions
-          PROJECT:    ${{ secrets.AZUREDEVOPSPROJECT }}          # exact project name
-          REPO:       ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}   # repo name or GUID
-          PAT:        ${{ secrets.AZURE_DEVOPS_PAT }}
-          BRANCH:     ${{ env.BRANCH }}
+          ORG_URL:   ${{ secrets.AZURE_DEVOPS_ORG_URL }}
+          PROJECT:   ${{ secrets.AZUREDEVOPSPROJECT }}
+          REPO_ID:   ${{ steps.ado.outputs.repo_id }}
+          PAT:       ${{ secrets.AZURE_DEVOPS_PAT }}
+          BRANCH:    ${{ env.BRANCH }}
         run: |
           set -euo pipefail
 
-          if [ -z "${ORG_URL:-}" ] || [ -z "${PROJECT:-}" ] || [ -z "${REPO:-}" ] || [ -z "${PAT:-}" ]; then
-            echo "ERROR: Missing one of ORG_URL/PROJECT/REPO/PAT." >&2
-            exit 2
-          fi
-
-          # Exact README paths
           declare -A FILES
           FILES["/src/KemibrugV2.Application/README.md"]="Application"
           FILES["/src/KemibrugV2.Core/README.md"]="Core"
           FILES["/src/KemibrugV2.Infrastructure/README.md"]="Infrastructure"
           FILES["/src/KemibrugV2.WebApiServer/README.md"]="WebApiServer"
 
-          base="${ORG_URL%/}/${PROJECT}/_apis/git/repositories/${REPO}/items"
+          base="${ORG_URL%/}/${PROJECT}/_apis/git/repositories/${REPO_ID}/items"
+
+          # small retry helper
+          fetch_file() {
+            local path="$1"
+            local tries=3
+            local tmp="$(mktemp)"
+            local code
+            for i in $(seq 1 $tries); do
+              code=$(curl -sS -L -u :$PAT -w "%{http_code}" -o "$tmp" \
+                -H "Accept: application/octet-stream" \
+                -G \
+                --data-urlencode "path=${path}" \
+                --data-urlencode "versionDescriptor.version=${BRANCH}" \
+                --data-urlencode "api-version=7.1-preview.1" \
+                "$base" || true)
+              echo "GET ${base}?path=<encoded>&versionDescriptor.version=${BRANCH} -> HTTP ${code} for ${path}"
+              if [ "$code" = "200" ]; then
+                cat "$tmp"
+                rm -f "$tmp"
+                return 0
+              fi
+              sleep 1
+            done
+            rm -f "$tmp"
+            return 22
+          }
 
           echo "[" > docs.json
           first=1
@@ -65,33 +128,15 @@ jobs:
 
           for p in "${!FILES[@]}"; do
             layer="${FILES[$p]}"
-            tmp="$(mktemp)"
-            # Use curl -G so we can let curl URL-encode query parameters safely
-            http=$(curl -sS -L -u :$PAT -w "%{http_code}" -o "$tmp" -G \
-              --data-urlencode "path=${p}" \
-              --data-urlencode "download=true" \
-              --data-urlencode "versionDescriptor.version=${BRANCH}" \
-              --data-urlencode "api-version=7.1-preview.1" \
-              "$base" || true)
-
-            echo "GET $base?path=<encoded>&download=true&versionDescriptor.version=${BRANCH}  -> HTTP $http for $p"
-
-            if [ "$http" != "200" ]; then
-              echo "WARN: Could not fetch $p (HTTP $http)" >&2
-              rm -f "$tmp"
+            content="$(fetch_file "$p" || true)"
+            if [ -z "$content" ]; then
+              echo "WARN: Could not fetch $p"
               continue
             fi
 
-            # Base64 encode file content (no line wraps)
-            b64=$(base64 -w0 < "$tmp" || true)
-            rm -f "$tmp"
-
-            if [ -z "$b64" ]; then
-              echo "WARN: Empty content for $p" >&2
-              continue
-            fi
-
-            id=$(echo "$p" | sed 's/[^a-zA-Z0-9._-]/_/g')
+            # base64 encode (one line)
+            b64="$(printf "%s" "$content" | base64 -w0)"
+            id="$(echo "$p" | sed 's/[^a-zA-Z0-9._-]/_/g')"
 
             entry=$(jq -n \
               --arg id "$id" \
@@ -111,12 +156,10 @@ jobs:
           done
 
           echo "]" >> docs.json
-
           if [ "$added" -eq 0 ]; then
-            echo "ERROR: docs.json has no items. Check branch, repo name/GUID, or paths." >&2
+            echo "ERROR: docs.json has no items. Check branch, repo ID, or paths exist on that branch."
             exit 2
           fi
-
           echo "Built docs.json with $added item(s)."
 
       - name: Upload docs.json artifact (debug)
@@ -125,7 +168,7 @@ jobs:
           name: docs-json
           path: docs.json
 
-      # ---- Push docs to Azure AI Search ----
+      # ---------- Push docs to Azure AI Search ----------
       - name: Push docs to Azure AI Search
         shell: bash
         env:
@@ -145,7 +188,7 @@ jobs:
             "${SEARCH_ENDPOINT%/}/indexes/${SEARCH_INDEX}/docs/index?api-version=2023-11-01"
           echo "Uploaded README docs to Azure AI Search."
 
-      # ---- Build & deploy Functions ----
+      # ---------- Build & deploy Functions ----------
       - name: Build Functions
         shell: bash
         run: |
