@@ -44,10 +44,10 @@ jobs:
         id: resolve_ids
         shell: bash
         env:
-          ORG_URL:  ${{ secrets.AZURE_DEVOPS_ORG_URL }}
-          PROJ_NAME:  ${{ secrets.AZUREDEVOPSPROJECT }}
-          REPO_HINT:  ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}
-          PAT:      ${{ secrets.AZURE_DEVOPS_PAT }}
+          ORG_URL:   ${{ secrets.AZURE_DEVOPS_ORG_URL }}
+          PROJ_NAME: ${{ secrets.AZUREDEVOPSPROJECT }}
+          REPO_HINT: ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}
+          PAT:       ${{ secrets.AZURE_DEVOPS_PAT }}
         run: |
           set -euo pipefail
           sudo apt-get update -y && sudo apt-get install -y jq python3
@@ -294,4 +294,5 @@ jobs:
           app-name: "kemibrug-ai-assistant"
           slot-name: "Production"
           package: "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output"
+
 
