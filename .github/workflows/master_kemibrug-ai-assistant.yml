@@ -2,12 +2,13 @@ name: Build and deploy dotnet core app to Azure Function App - kemibrug-ai-assis
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
   workflow_dispatch:
 
 env:
   AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
   DOTNET_VERSION: '8.0.x'
+  BRANCH: 'master'   # <-- ret til 'main' hvis det er jeres branch
 
 jobs:
   build-and-deploy:
@@ -25,93 +26,60 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Tools (jq, python)
+      - name: Ensure curl/jq/python available
         shell: bash
         run: |
-          set -euo pipefail
-          sudo apt-get update -y >/dev/null
+          set -e
+          sudo apt-get update -y
           sudo apt-get install -y jq python3 >/dev/null
 
-      # =======================
-      # Resolve ADO project/repo
-      # =======================
-      - name: Resolve Azure DevOps ProjectId and RepoId (robust)
-        id: ado
+      # --- Byg docs.json fra ADO: de 4 README.md ---
+      - name: Build docs.json from ADO READMEs
         shell: bash
         env:
-          ORG_URL: ${{ secrets.AZURE_DEVOPS_ORG_URL }}        # e.g. https://dev.azure.com/Custom-Web-Solutions
-          PAT:     ${{ secrets.AZURE_DEVOPS_PAT }}
-          IN_PROJ: ${{ secrets.AZUREDEVOPSPROJECT }}          # projektets NAVN eller ID
-          IN_REPO: ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}   # repo NAVN eller ID
-        run: |
-          set -euo pipefail
-
-          if [ -z "${ORG_URL:-}" ] || [ -z "${PAT:-}" ] || [ -z "${IN_PROJ:-}" ] || [ -z "${IN_REPO:-}" ]; then
-            echo "::error::Missing one or more ADO secrets (ORG_URL, PAT, AZUREDEVOPSPROJECT, AZUREDEVOPSREPOSITORYNAME)."
-            exit 3
-          fi
-
-          # Helper: case-insensitive cmp in jq
-          jq_ci_match='( ( .name // "" ), ( .id // "" ) | ascii_downcase ) as $x | ($x == ($needle|ascii_downcase))'
-
-          # Fetch projects
-          PROJ_URL="${ORG_URL%/}/_apis/projects?api-version=7.1-preview.4"
-          echo "GET $PROJ_URL"
-          PROJ_JSON=$(curl -sS -L --fail-with-body -u :$PAT "$PROJ_URL")
-          export needle="$IN_PROJ"
-          PROJECT_ID=$(jq -r --arg needle "$IN_PROJ" '
-            .value[] | select( ( .name|ascii_downcase == ($needle|ascii_downcase) ) or ( .id|ascii_downcase == ($needle|ascii_downcase) ) ) | .id
-          ' <<<"$PROJ_JSON" | head -n1)
-
-          if [ -z "${PROJECT_ID:-}" ] || [ "$PROJECT_ID" = "null" ]; then
-            echo "::error::Could not resolve ProjectId from '$IN_PROJ'."
-            echo "Projects available:" 
-            jq -r '.value[] | "\(.name)  (\(.id))"' <<<"$PROJ_JSON" || true
-            exit 3
-          fi
-          echo "Resolved PROJECT_ID=$PROJECT_ID"
-
-          # Fetch repos for that project
-          REPO_URL="${ORG_URL%/}/${PROJECT_ID}/_apis/git/repositories?api-version=7.1-preview.1"
-          echo "GET $REPO_URL"
-          REPO_JSON=$(curl -sS -L --fail-with-body -u :$PAT "$REPO_URL")
-          REPO_ID=$(jq -r --arg needle "$IN_REPO" '
-            .value[] | select( ( .name|ascii_downcase == ($needle|ascii_downcase) ) or ( .id|ascii_downcase == ($needle|ascii_downcase) ) ) | .id
-          ' <<<"$REPO_JSON" | head -n1)
-
-          if [ -z "${REPO_ID:-}" ] || [ "$REPO_ID" = "null" ]; then
-            echo "::error::Could not resolve RepoId from '$IN_REPO'."
-            echo "Repos available:"
-            jq -r '.value[] | "\(.name)  (\(.id))"' <<<"$REPO_JSON" || true
-            exit 3
-          fi
-          echo "Resolved REPO_ID=$REPO_ID"
-
-          echo "PROJECT_ID=$PROJECT_ID"   >> $GITHUB_ENV
-          echo "REPO_ID=$REPO_ID"         >> $GITHUB_ENV
-
-      # =======================
-      # Build docs.json from READMEs (raw mode)
-      # =======================
-      - name: Build docs.json from READMEs (raw text mode)
-        shell: bash
-        env:
-          ORG_URL:    ${{ secrets.AZURE_DEVOPS_ORG_URL }}
+          ORG_URL:    ${{ secrets.AZURE_DEVOPS_ORG_URL }}       # fx https://dev.azure.com/Custom-Web-Solutions
+          PROJECT:    ${{ secrets.AZUREDEVOPSPROJECT }}         # projektnavn præcist som i ADO
+          REPO:       ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}  # repo-navn eller GUID (begge virker)
           PAT:        ${{ secrets.AZURE_DEVOPS_PAT }}
-          PROJECT_ID: ${{ env.PROJECT_ID }}
-          REPO_ID:    ${{ env.REPO_ID }}
+          BRANCH:     ${{ env.BRANCH }}
         run: |
           set -euo pipefail
 
-          # URL-encode helper (reads from stdin)
+          if [ -z "${ORG_URL:-}" ] || [ -z "${PROJECT:-}" ] || [ -z "${REPO:-}" ] || [ -z "${PAT:-}" ]; then
+            echo "ERROR: Missing one of ORG_URL/PROJECT/REPO/PAT envs." >&2
+            exit 2
+          fi
+
           urlencode() {
             python3 - <<'PY'
-            import sys, urllib.parse
-            print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))
-            PY
+import sys, urllib.parse
+print(urllib.parse.quote(sys.stdin.read().strip(), safe=""))
+PY
           }
 
-          # README-mapping (udvid hvis du tilføjer flere)
+          fetch_file_b64 () {
+            local path="$1"
+            local enc_path; enc_path=$(printf "%s" "$path" | urlencode)
+            # Items API – raw download + branch låsning
+            local url="${ORG_URL%/}/${PROJECT}/_apis/git/repositories/${REPO}/items?path=${enc_path}&download=true&versionDescriptor.version=${BRANCH}&api-version=7.1-preview.1"
+            echo "GET $url"
+            # hent til tmp, læs http-kode
+            local tmp http
+            tmp=$(mktemp)
+            http=$(curl -sS -L -u :$PAT -w "%{http_code}" -o "$tmp" "$url" || true)
+            echo "HTTP $http for $path"
+            if [ "$http" != "200" ]; then
+              echo "WARN: $path not found (HTTP $http)"; rm -f "$tmp"; return 1
+            fi
+            # base64-enkod (uden linjeskift)
+            local b64
+            b64=$(base64 -w0 < "$tmp")
+            rm -f "$tmp"
+            printf "%s" "$b64"
+            return 0
+          }
+
+          # De præcise README-stier (du sagde de hedder README.md alle steder)
           declare -A FILES
           FILES["/src/KemibrugV2.Application/README.md"]="Application"
           FILES["/src/KemibrugV2.Core/README.md"]="Core"
@@ -121,47 +89,38 @@ jobs:
           echo "[" > docs.json
           first=1
           added=0
-          for path in "${!FILES[@]}"; do
-            layer="${FILES[$path]}"
-            enc_path=$(printf "%s" "$path" | urlencode)
-            url="${ORG_URL%/}/${PROJECT_ID}/_apis/git/repositories/${REPO_ID}/items?path=${enc_path}&download=true&api-version=7.1-preview.1"
-            echo "GET $path"
-            tmp=$(mktemp)
-            code=$(curl -sS -L --fail-with-body -H "Accept: text/plain" -u :$PAT -w "%{http_code}" -o "$tmp" "$url" || true)
-            echo "HTTP $code"
-            if [ "$code" != "200" ]; then
-              echo "WARN: could not fetch $path (HTTP $code)"; head -c 200 "$tmp" || true; echo
-              rm -f "$tmp"
-              continue
+
+          for p in "${!FILES[@]}"; do
+            layer="${FILES[$p]}"
+            if b64=$(fetch_file_b64 "$p"); then
+              id=$(echo "$p" | sed 's/[^a-zA-Z0-9._-]/_/g')
+              entry=$(jq -n \
+                --arg id "$id" \
+                --arg path "$p" \
+                --arg layer "$layer" \
+                --arg project "KemibrugV2" \
+                --arg content_b64 "$b64" \
+                '{ "@search.action":"mergeOrUpload",
+                   "id":$id, "path":$path, "layer":$layer, "project":$project,
+                   "encoding":"base64", "content_b64":$content_b64 }')
+              if [ $first -eq 0 ]; then echo "," >> docs.json; fi
+              echo "$entry" >> docs.json
+              first=0
+              added=$((added+1))
+              echo "OK: added $p ($layer)"
+            else
+              echo "SKIP: $p"
             fi
-
-            # JSON-escape indholdet
-            content_json=$(jq -Rs . < "$tmp")
-            rm -f "$tmp"
-
-            id=$(echo "$path" | sed 's/[^a-zA-Z0-9._-]/_/g')
-
-            entry=$(jq -n \
-              --arg id "$id" \
-              --arg path "$path" \
-              --arg layer "$layer" \
-              --argjson content "$content_json" \
-              '{ "@search.action":"mergeOrUpload", id:$id, path:$path, layer:$layer, content:$content }')
-
-            if [ $first -eq 0 ]; then echo "," >> docs.json; fi
-            echo "$entry" >> docs.json
-            first=0
-            added=$((added+1))
           done
+
           echo "]" >> docs.json
 
           if [ "$added" -eq 0 ]; then
-            echo "::error::No README files added to docs.json; fix IDs/paths/PAT."
+            echo "ERROR: docs.json has no items. Check branch, repo, or paths." >&2
             exit 2
           fi
 
-          echo "SUMMARY ok=$added"
-          jq '.[].id' docs.json || true
+          echo "Built docs.json with $added item(s)."
 
       - name: Upload docs.json artifact (debug)
         uses: actions/upload-artifact@v4
@@ -169,42 +128,37 @@ jobs:
           name: docs-json
           path: docs.json
 
-      # =======================
-      # Push docs to Azure AI Search
-      # =======================
+      # --- Push til Azure AI Search ---
       - name: Push docs to Azure AI Search
-        if: always()
+        if: ${{ always() }}
         shell: bash
         env:
-          SEARCH_ENDPOINT: ${{ secrets.AZURE_SEARCH_ENDPOINT }}   # e.g. https://search-kemibrug.search.windows.net
-          SEARCH_INDEX:    ${{ secrets.AZURE_SEARCH_INDEX }}      # e.g. kemibrug-rules
+          SEARCH_ENDPOINT: ${{ secrets.AZURE_SEARCH_ENDPOINT }}   # https://<name>.search.windows.net
+          SEARCH_INDEX:    ${{ secrets.AZURE_SEARCH_INDEX }}      # fx kemibrug-rules
           SEARCH_KEY:      ${{ secrets.AZURE_SEARCH_ADMIN_KEY }}
         run: |
           set -euo pipefail
           if [ ! -s docs.json ]; then
-            echo "::warning::docs.json missing or empty; skipping AI Search push."
+            echo "WARN: docs.json missing or empty; skipping AI Search push."
             exit 0
           fi
           curl -sS -X POST \
             -H "Content-Type: application/json" \
             -H "api-key: ${SEARCH_KEY}" \
             --data @docs.json \
-            "${SEARCH_ENDPOINT%/}/indexes/${SEARCH_INDEX}/docs/index?api-version=2023-11-01" \
-            | jq -r '.'
+            "${SEARCH_ENDPOINT%/}/indexes/${SEARCH_INDEX}/docs/index?api-version=2023-11-01"
           echo "Uploaded README docs to Azure AI Search."
 
-      # =======================
-      # Build & Deploy Azure Functions
-      # =======================
-      - name: Build Function App
+      # --- Byg & deploy Function App ---
+      - name: Build Functions
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
           pushd './${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}'
           dotnet build --configuration Release --output ./output
           popd
 
-      - name: Azure Login (OIDC)
+      - name: Azure login
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_CC61583FBBEC4600B796FAECBE66F119 }}
@@ -232,7 +186,6 @@ jobs:
 
       - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
-        id: fa
         with:
           app-name: 'kemibrug-ai-assistant'
           slot-name: 'Production'
