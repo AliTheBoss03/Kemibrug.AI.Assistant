@@ -129,22 +129,28 @@ jobs:
               continue
             fi
 
-            # JSON-escape the plain text for "content"
-            content_json="$(printf "%s" "$content" | jq -Rs .)"
+            # Fjern første linje hvis den starter med "GET "
+            content_clean="$(printf "%s" "$content" | sed '1{/^GET /d;}')"
+
+            # (valgfrit) normalisér CRLF -> LF
+            content_clean="$(printf "%s" "$content_clean" | tr -d '\r')"
+
+            # JSON-escape den rensede tekst til "content"
+            content_json="$(printf "%s" "$content_clean" | jq -Rs .)"
+
             b64url="$(printf "%s" "$p" | base64 | tr '+/' '-_' | tr -d '=' | tr -d '\n')"
             id="rdm-${b64url}"
 
             tmp="$(mktemp)"
             jq --arg id "$id" \
-               --arg path "$p" \
-               --arg layer "$layer" \
-               --arg project "KemibrugV2" \
-               --argjson content "$content_json" \
-               '.value += [ { "@search.action":"mergeOrUpload",
-                              id:$id, path:$path, layer:$layer, project:$project,
-                              content:$content } ]' \
-               docs.json > "$tmp"
-            mv "$tmp" docs.json
+             --arg path "$p" \
+             --arg layer "$layer" \
+             --arg project "KemibrugV2" \
+             --argjson content "$content_json" \
+             '.value += [ { "@search.action":"mergeOrUpload",
+                  id:$id, path:$path, layer:$layer, project:$project,
+                  content:$content } ]' \
+             docs.json > "$tmp" && mv "$tmp" docs.json
 
             echo "OK: added $p ($layer)"
             added=$((added+1))
@@ -224,5 +230,6 @@ jobs:
           app-name: 'kemibrug-ai-assistant'
           slot-name: 'Production'
           package: '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output'
+
 
 
