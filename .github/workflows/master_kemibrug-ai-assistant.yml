@@ -1,42 +1,204 @@
-# Docs for the Azure Web Apps Deploy action: https://github.com/azure/functions-action
-# More GitHub Actions for Azure: https://github.com/Azure/actions
-
 name: Build and deploy dotnet core app to Azure Function App - kemibrug-ai-assistant
 
 on:
   push:
-    branches:
-      - master
+    branches: [ master ]
   workflow_dispatch:
 
 env:
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.' # set this to the path to your web app project, defaults to the repository root
-  DOTNET_VERSION: '8.0.x' # set this to the dotnet version to use
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
+  DOTNET_VERSION: '8.0.x'
+  BRANCH: 'main'
 
 jobs:
   build-and-deploy:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     permissions:
-      id-token: write #This is required for requesting the JWT
-      contents: read #This is required for actions/checkout
+      id-token: write
+      contents: read
 
     steps:
-      - name: 'Checkout GitHub Action'
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup DotNet ${{ env.DOTNET_VERSION }} Environment
+      - name: Setup .NET
         uses: actions/setup-dotnet@v1
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: 'Resolve Project Dependencies Using Dotnet'
-        shell: pwsh
+      - name: Ensure tools (jq, python3, coreutils)
+        shell: bash
         run: |
+          set -e
+          sudo apt-get update -y
+          sudo apt-get install -y jq python3 coreutils >/dev/null
+
+      # ---------- Resolve Azure DevOps repo ID (accept name or GUID) ----------
+      - name: Resolve ADO repo ID
+        id: ado
+        shell: bash
+        env:
+          ORG_URL:  ${{ secrets.AZURE_DEVOPS_ORG_URL }}       # e.g. https://dev.azure.com/Custom-Web-Solutions
+          PROJECT:  ${{ secrets.AZUREDEVOPSPROJECT }}         # exact project name (can contain spaces)
+          REPO_IN:  ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}  # repo NAME or GUID
+          PAT:      ${{ secrets.AZURE_DEVOPS_PAT }}
+        run: |
+          set -euo pipefail
+          echo "ORG_URL=$ORG_URL"
+          echo "PROJECT=$PROJECT"
+          echo "REPO_IN=$REPO_IN"
+
+          if [ -z "${ORG_URL:-}" ] || [ -z "${PROJECT:-}" ] || [ -z "${REPO_IN:-}" ] || [ -z "${PAT:-}" ]; then
+            echo "ERROR: Missing ORG_URL/PROJECT/REPO_IN/PAT"
+            exit 3
+          fi
+
+          # URL-encode the project segment without a here-doc
+          PROJECT_ENC="$(python3 -c 'import os,urllib.parse;print(urllib.parse.quote(os.environ["PROJECT"], safe=""))')"
+          BASE_LIST_URL="${ORG_URL%/}/${PROJECT_ENC}/_apis/git/repositories?api-version=7.1-preview.1"
+
+          # If REPO_IN looks like a GUID, use it as-is
+          if [[ "$REPO_IN" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            REPO_ID="$REPO_IN"
+            echo "Using provided repo GUID: $REPO_ID"
+          else
+            echo "GET $BASE_LIST_URL"
+            resp="$(curl -sS -f -u :$PAT "$BASE_LIST_URL")" || { echo "ERROR: curl failed listing repos"; exit 3; }
+            echo "$resp" | jq -e . >/dev/null || { echo "ERROR: Non-JSON listing repos"; echo "$resp"; exit 3; }
+            REPO_ID="$(echo "$resp" | jq -r --arg name "$REPO_IN" '.value[] | select(.name==$name) | .id' | head -n1)"
+            if [ -z "$REPO_ID" ] || [ "$REPO_ID" = "null" ]; then
+              echo "ERROR: Could not find repository named '$REPO_IN' in project '$PROJECT'. Available repos:"
+              echo "$resp" | jq -r '.value[] | "\(.name)  \(.id)"'
+              exit 3
+            fi
+            echo "Resolved repo '$REPO_IN' -> $REPO_ID"
+          fi
+
+          echo "repo_id=$REPO_ID" >> "$GITHUB_OUTPUT"
+          echo "project_enc=$PROJECT_ENC" >> "$GITHUB_OUTPUT"
+
+      # ---------- Fetch README.md files and build docs.json (PLAIN TEXT) ----------
+      - name: Build docs.json from ADO READMEs (plain text)
+        shell: bash
+        env:
+          ORG_URL:     ${{ secrets.AZURE_DEVOPS_ORG_URL }}
+          PROJECT_ENC: ${{ steps.ado.outputs.project_enc }}
+          REPO_ID:     ${{ steps.ado.outputs.repo_id }}
+          PAT:         ${{ secrets.AZURE_DEVOPS_PAT }}
+          BRANCH:      ${{ env.BRANCH }}
+        run: |
+          set -euo pipefail
+
+          declare -A FILES
+          FILES["/src/KemibrugV2.Application/README.md"]="Application"
+          FILES["/src/KemibrugV2.Core/README.md"]="Core"
+          FILES["/src/KemibrugV2.Infrastructure/README.md"]="Infrastructure"
+          FILES["/src/KemibrugV2.WebApiServer/README.md"]="WebApiServer"
+
+          BASE="${ORG_URL%/}/${PROJECT_ENC}/_apis/git/repositories/${REPO_ID}/items"
+
+          fetch_file() {
+            local path="$1"
+            local tmp="$(mktemp)"
+            local code
+            code=$(curl -sS -L -u :$PAT -w "%{http_code}" -o "$tmp" \
+              -H "Accept: application/octet-stream" \
+              -G \
+              --data-urlencode "path=${path}" \
+              --data-urlencode "versionDescriptor.version=${BRANCH}" \
+              --data-urlencode "api-version=7.1-preview.1" \
+              "$BASE" || true)
+            echo "GET ${BASE}?path=<encoded>&versionDescriptor.version=${BRANCH} -> HTTP ${code} for ${path}"
+            if [ "$code" = "200" ]; then
+              cat "$tmp"
+              rm -f "$tmp"
+              return 0
+            fi
+            cat "$tmp" >&2 || true
+            rm -f "$tmp"
+            return 22
+          }
+
+          echo '{ "value": [] }' > docs.json
+          added=0
+
+          for p in "${!FILES[@]}"; do
+            layer="${FILES[$p]}"
+            if ! content="$(fetch_file "$p")"; then
+              echo "WARN: Could not fetch $p"
+              continue
+            fi
+
+            # Fjern første linje hvis den starter med "GET "
+            content_clean="$(printf "%s" "$content" | sed '1{/^GET /d;}')"
+
+            # (valgfrit) normalisér CRLF -> LF
+            content_clean="$(printf "%s" "$content_clean" | tr -d '\r')"
+
+            # JSON-escape den rensede tekst til "content"
+            content_json="$(printf "%s" "$content_clean" | jq -Rs .)"
+
+            b64url="$(printf "%s" "$p" | base64 | tr '+/' '-_' | tr -d '=' | tr -d '\n')"
+            id="rdm-${b64url}"
+
+            tmp="$(mktemp)"
+            jq --arg id "$id" \
+             --arg path "$p" \
+             --arg layer "$layer" \
+             --arg project "KemibrugV2" \
+             --argjson content "$content_json" \
+             '.value += [ { "@search.action":"mergeOrUpload",
+                  id:$id, path:$path, layer:$layer, project:$project,
+                  content:$content } ]' \
+             docs.json > "$tmp" && mv "$tmp" docs.json
+
+            echo "OK: added $p ($layer)"
+            added=$((added+1))
+          done
+
+          jq '{count:(.value|length), ids:(.value|map(.id))}' docs.json
+          if [ "$added" -eq 0 ]; then
+            echo "ERROR: docs.json has no items. Check branch, repo ID, or paths."
+            exit 2
+          fi
+          echo "Built docs.json with $added item(s) (plain text)."
+
+      - name: Upload docs.json artifact (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-json
+          path: docs.json
+
+      # ---------- Push docs to Azure AI Search ----------
+      - name: Push docs to Azure AI Search
+        shell: bash
+        env:
+          SEARCH_ENDPOINT: ${{ secrets.AZURE_SEARCH_ENDPOINT }}   # https://<name>.search.windows.net
+          SEARCH_INDEX:    ${{ secrets.AZURE_SEARCH_INDEX }}      # kemibrug-rules
+          SEARCH_KEY:      ${{ secrets.AZURE_SEARCH_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ ! -s docs.json ]; then
+            echo "WARN: docs.json missing or empty; skipping AI Search push."
+            exit 0
+          fi
+          curl -sS -X POST \
+            -H "Content-Type: application/json" \
+            -H "api-key: ${SEARCH_KEY}" \
+            --data @docs.json \
+            "${SEARCH_ENDPOINT%/}/indexes/${SEARCH_INDEX}/docs/index?api-version=2023-11-01"
+          echo "Uploaded README docs to Azure AI Search."
+
+      # ---------- Build & deploy Functions ----------
+      - name: Build Functions
+        shell: bash
+        run: |
+          set -e
           pushd './${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}'
           dotnet build --configuration Release --output ./output
           popd
-      
-      - name: Login to Azure
+
+      - name: Azure login
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_CC61583FBBEC4600B796FAECBE66F119 }}
@@ -44,23 +206,30 @@ jobs:
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_BE4AA3B5668B4EFD94873CB496000E0A }}
 
       - name: Configure app settings
-        uses: azure/appservice-settings@v1
+        uses: azure/CLI@v1
         with:
-          app-name: 'kemibrug-ai-assistant'
-          app-settings-json: |
-            [
-              { "name": "AzureDevOpsPAT",      "value": "${{ secrets.AZURE_DEVOPS_PAT }}",      "slotSetting": false },
-              { "name": "AzureDevOpsOrgUrl",   "value": "${{ secrets.AZURE_DEVOPS_ORG_URL }}",  "slotSetting": false },
-              { "name": "AzureOpenAIEndpoint", "value": "${{ secrets.AZURE_OPENAI_ENDPOINT }}", "slotSetting": false },
-              { "name": "AzureOpenAIApiKey",   "value": "${{ secrets.AZURE_OPENAI_APIKEY }}",   "slotSetting": false }
-            ]
+          inlineScript: |
+            az functionapp config appsettings set \
+              --name kemibrug-ai-assistant \
+              --resource-group rg-diplomprojekt-ai \
+              --settings \
+                AzureDevOpsPAT='${{ secrets.AZURE_DEVOPS_PAT }}' \
+                AzureDevOpsOrgUrl='${{ secrets.AZURE_DEVOPS_ORG_URL }}' \
+                AzureDevOpsProject='${{ secrets.AZUREDEVOPSPROJECT }}' \
+                AzureDevOpsRepositoryName='${{ secrets.AZUREDEVOPSREPOSITORYNAME }}' \
+                AzureOpenAIEndpoint='${{ secrets.AZURE_OPENAI_ENDPOINT }}' \
+                AzureOpenAIApiKey='${{ secrets.AZURE_OPENAI_APIKEY }}' \
+                AzureSearchEndpoint='${{ secrets.AZURE_SEARCH_ENDPOINT }}' \
+                AzureSearchIndex='${{ secrets.AZURE_SEARCH_INDEX }}' \
+                AzureSearchApiKey='${{ secrets.AZURE_SEARCH_ADMIN_KEY }}' \
+                AnalysisSystemPromptV2='${{ secrets.ANALYSIS_SYSTEM_PROMPT_V2 }}'
 
-      - name: 'Run Azure Functions Action'
+      - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
-        id: fa
         with:
           app-name: 'kemibrug-ai-assistant'
           slot-name: 'Production'
           package: '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output'
 
-          
+
+
