@@ -131,9 +131,8 @@ jobs:
 
             # JSON-escape the plain text for "content"
             content_json="$(printf "%s" "$content" | jq -Rs .)"
-            hash="$(printf "%s" "$p" | sha1sum | cut -c1-12)"
-            safe="$(echo "$p" | sed 's#^/##; s/[^A-Za-z0-9.-]/-/g')"
-            id="rdm-${hash}-${safe}"
+            b64url="$(printf "%s" "$p" | base64 | tr '+/' '-_' | tr -d '=' | tr -d '\n')"
+            id="rdm-${b64url}"
 
             tmp="$(mktemp)"
             jq --arg id "$id" \
@@ -225,4 +224,5 @@ jobs:
           app-name: 'kemibrug-ai-assistant'
           slot-name: 'Production'
           package: '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output'
+
 
