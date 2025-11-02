@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 env:
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
-  DOTNET_VERSION: '8.0.x'
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: "."
+  DOTNET_VERSION: "8.0.x"
 
 jobs:
   build-and-deploy:
@@ -17,25 +17,57 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout
+      - name: "Checkout"
         uses: actions/checkout@v4
 
-      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+      - name: "Setup .NET"
         uses: actions/setup-dotnet@v1
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-version: "${{ env.DOTNET_VERSION }}"
 
-      # === HENT README-FILER FRA AZURE DEVOPS OG BYG docs.json (diagnose) ===
-      - name: Fetch Kemibrug READMEs from Azure DevOps and build docs.json (diagnostic)
+      # --- DIAGNOSE: list repos (find repo ID) ---
+      - name: "Diagnose ADO access - list repositories"
         shell: bash
         env:
-          AZDO_ORG_URL: ${{ secrets.AZURE_DEVOPS_ORG_URL }}      # fx https://dev.azure.com/Custom-Web-Solutions
-          AZDO_PROJECT: ${{ secrets.AZUREDEVOPSPROJECT }}        # præcist projektnavn
-          AZDO_REPO:    ${{ secrets.AZUREDEVOPSREPOSITORYNAME }} # repo NAVN eller ID (ID er mest robust)
-          AZDO_PAT:     ${{ secrets.AZURE_DEVOPS_PAT }}
+          AZDO_ORG_URL: ${{ secrets.AZURE_DEVOPS_ORG_URL }}
+          AZDO_PROJECT: ${{ secrets.AZUREDEVOPSPROJECT }}
+          AZDO_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
         run: |
-          set -euo pipefail
-          sudo apt-get update -y && sudo apt-get install -y jq python3
+          set -e
+          echo "Listing repos for project: ${AZDO_PROJECT}"
+          curl -sS -u :$AZDO_PAT \
+            "${AZDO_ORG_URL}/${AZDO_PROJECT}/_apis/git/repositories?api-version=7.1-preview.1" \
+            | jq -r '.value[] | "name=\(.name)  id=\(.id)"'
+
+      # --- DIAGNOSE: list items under / and /src (verify exact paths) ---
+      - name: "Diagnose ADO paths - list items"
+        shell: bash
+        env:
+          AZDO_ORG_URL: ${{ secrets.AZURE_DEVOPS_ORG_URL }}
+          AZDO_PROJECT: ${{ secrets.AZUREDEVOPSPROJECT }}
+          AZDO_REPO: ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}  # prefer repo ID
+          AZDO_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
+        run: |
+          set -e
+          for scope in "/" "/src"; do
+            echo "Listing items at scopePath=${scope}"
+            curl -sS -u :$AZDO_PAT \
+              "${AZDO_ORG_URL}/${AZDO_PROJECT}/_apis/git/repositories/${AZDO_REPO}/items?scopePath=${scope}&recursionLevel=Full&$top=2000&api-version=7.1-preview.1" \
+              | jq -r '.value[]?.path' | head -n 200
+          done
+
+      # --- FETCH README files and build docs.json (robust + diagnostic) ---
+      - name: "Fetch Kemibrug READMEs and build docs.json (diagnostic)"
+        shell: bash
+        env:
+          AZDO_ORG_URL: ${{ secrets.AZURE_DEVOPS_ORG_URL }}
+          AZDO_PROJECT: ${{ secrets.AZUREDEVOPSPROJECT }}
+          AZDO_REPO: ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}  # prefer repo ID
+          AZDO_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
+        run: |
+          set -e
+          sudo apt-get update -y
+          sudo apt-get install -y jq python3
 
           urlencode() {
             python3 - <<'PY'
@@ -44,6 +76,7 @@ jobs:
             PY
           }
 
+          # Adjust these paths if the diagnose step shows different locations/casing
           declare -A FILES
           FILES["/src/KemibrugV2.Application/README.md"]="Application"
           FILES["/src/KemibrugV2.Core/README.md"]="Core"
@@ -53,51 +86,44 @@ jobs:
           PROJECT="KemibrugV2"
 
           fetch_file() {
-            local raw_path="$1"
-            local enc_path; enc_path=$(printf "%s" "$raw_path" | urlencode)
-            local url="${AZDO_ORG_URL}/${AZDO_PROJECT}/_apis/git/repositories/${AZDO_REPO}/items?path=%2F${enc_path#%2F}&includeContent=true&api-version=7.1-preview.1"
-            echo "INFO: GET $url" >&2
-            local tmp resp_status
-            tmp=$(mktemp)
-            resp_status=$(curl -sS -u :$AZDO_PAT -w "%{http_code}" -o "$tmp" "$url" || true)
-            echo "$resp_status" "$tmp"
+            local raw="$1"
+            local enc; enc=$(printf "%s" "$raw" | urlencode)
+            local url="${AZDO_ORG_URL}/${AZDO_PROJECT}/_apis/git/repositories/${AZDO_REPO}/items?path=%2F${enc#%2F}&includeContent=true&api-version=7.1-preview.1"
+            local tmp; tmp=$(mktemp)
+            local status
+            status=$(curl -sS -u :$AZDO_PAT -w "%{http_code}" -o "$tmp" "$url" || true)
+            echo "$status" "$tmp"
           }
 
           echo "[" > docs.json
           first=1
-          ok_count=0
-          fail_count=0
+          ok=0
+          fail=0
 
           for path in "${!FILES[@]}"; do
             layer="${FILES[$path]}"
-            read -r status tmpfile < <(fetch_file "$path")
+            read -r status tmp < <(fetch_file "$path")
 
             if [ "$status" != "200" ]; then
-              echo "ERROR: ADO returned HTTP $status for $path" >&2
-              echo "----- Response body begin -----" >&2
-              cat "$tmpfile" >&2 || true
-              echo "----- Response body end   -----" >&2
-              rm -f "$tmpfile"
-              fail_count=$((fail_count+1))
+              echo "::warning::HTTP $status for $path"
+              echo "---- body begin ----"
+              cat "$tmp" || true
+              echo "---- body end ----"
+              rm -f "$tmp"
+              fail=$((fail+1))
               continue
             fi
 
-            if ! content=$(jq -r '.content // empty' < "$tmpfile"); then
-              echo "ERROR: jq failed to parse JSON for $path" >&2
-              cat "$tmpfile" >&2 || true
-              rm -f "$tmpfile"
-              fail_count=$((fail_count+1))
-              continue
-            fi
-            rm -f "$tmpfile"
+            content=$(jq -r '.content // empty' < "$tmp" || true)
+            rm -f "$tmp"
 
             if [ -z "$content" ]; then
-              echo "WARN: No content for $path" >&2
+              echo "::warning::No content for $path (empty or wrong path)"
+              fail=$((fail+1))
               continue
             fi
 
             id=$(echo "$path" | sed 's/[^a-zA-Z0-9._-]/_/g')
-
             entry=$(jq -n \
               --arg id "$id" \
               --arg content "$content" \
@@ -109,33 +135,33 @@ jobs:
             if [ $first -eq 0 ]; then echo "," >> docs.json; fi
             echo "$entry" >> docs.json
             first=0
-            ok_count=$((ok_count+1))
-            echo "OK: added $path ($layer)"
+            ok=$((ok+1))
+            echo "OK: added $path"
           done
 
           echo "]" >> docs.json
-          echo "SUMMARY: success=$ok_count, failed=$fail_count"
+          echo "SUMMARY ok=$ok fail=$fail"
           jq '.[].id' docs.json || true
-          # Fail hard hvis intet blev tilføjet (hjælper fejlfinding)
-          if [ $ok_count -eq 0 ]; then
-            echo "No README files added to docs.json; aborting." >&2
-            exit 1
+
+          if [ $ok -eq 0 ]; then
+            echo "::error::No README files added to docs.json; fix repo ID/paths/PAT scope."
+            exit 2
           fi
 
-      - name: Upload docs.json artifact (for debugging)
+      - name: "Upload docs.json artifact (for debugging)"
         uses: actions/upload-artifact@v4
         with:
           name: docs-json
           path: docs.json
 
-      - name: Push docs to Azure AI Search
+      - name: "Push docs to Azure AI Search"
         shell: bash
         env:
           SEARCH_ENDPOINT: ${{ secrets.AZURE_SEARCH_ENDPOINT }}   # https://<svc>.search.windows.net
-          SEARCH_INDEX:    ${{ secrets.AZURE_SEARCH_INDEX }}      # kemibrug-rules
-          SEARCH_KEY:      ${{ secrets.AZURE_SEARCH_ADMIN_KEY }}
+          SEARCH_INDEX: ${{ secrets.AZURE_SEARCH_INDEX }}         # kemibrug-rules
+          SEARCH_KEY: ${{ secrets.AZURE_SEARCH_ADMIN_KEY }}
         run: |
-          set -euo pipefail
+          set -e
           curl -sS -X POST \
             -H "Content-Type: application/json" \
             -H "api-key: ${SEARCH_KEY}" \
@@ -143,22 +169,21 @@ jobs:
             "${SEARCH_ENDPOINT}/indexes/${SEARCH_INDEX}/docs/index?api-version=2023-11-01"
           echo "Uploaded README docs to Azure AI Search."
 
-      # === BYG FUNKTION ===
-      - name: Build
+      - name: "Build"
         shell: pwsh
         run: |
-          pushd './${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}'
+          pushd "./${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}"
           dotnet build --configuration Release --output ./output
           popd
 
-      - name: Login to Azure
+      - name: "Login to Azure"
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_CC61583FBBEC4600B796FAECBE66F119 }}
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_4FAB11EB01304BE09563B7410BD1E837 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_BE4AA3B5668B4EFD94873CB496000E0A }}
 
-      - name: Configure app settings
+      - name: "Configure app settings"
         uses: azure/CLI@v1
         with:
           inlineScript: |
@@ -177,9 +202,9 @@ jobs:
                 AzureSearchApiKey='${{ secrets.AZURE_SEARCH_ADMIN_KEY }}' \
                 AnalysisSystemPromptV2='${{ secrets.ANALYSIS_SYSTEM_PROMPT_V2 }}'
 
-      - name: Deploy to Azure Functions
+      - name: "Deploy to Azure Functions"
         uses: Azure/functions-action@v1
         with:
-          app-name: 'kemibrug-ai-assistant'
-          slot-name: 'Production'
-          package: '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output'
+          app-name: "kemibrug-ai-assistant"
+          slot-name: "Production"
+          package: "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output"
