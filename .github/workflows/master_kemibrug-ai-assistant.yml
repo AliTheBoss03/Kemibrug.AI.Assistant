@@ -26,12 +26,12 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Ensure tools (jq, python3)
+      - name: Ensure tools (jq, python3, coreutils)
         shell: bash
         run: |
           set -e
           sudo apt-get update -y
-          sudo apt-get install -y jq python3 >/dev/null
+          sudo apt-get install -y jq python3 coreutils >/dev/null
 
       # ---------- Resolve Azure DevOps repo ID (accept name or GUID) ----------
       - name: Resolve ADO repo ID
@@ -53,15 +53,11 @@ jobs:
             exit 3
           fi
 
-          # URL-encode project segment
-          PROJECT_ENC="$(python3 - <<'PY'
-            import os, urllib.parse
-            print(urllib.parse.quote(os.environ["PROJECT"], safe=""))
-            PY
-          )"
+          # URL-encode the project segment without a here-doc
+          PROJECT_ENC="$(python3 -c 'import os,urllib.parse;print(urllib.parse.quote(os.environ["PROJECT"], safe=""))')"
           BASE_LIST_URL="${ORG_URL%/}/${PROJECT_ENC}/_apis/git/repositories?api-version=7.1-preview.1"
 
-          # If REPO_IN looks like a GUID, use directly
+          # If REPO_IN looks like a GUID, use it as-is
           if [[ "$REPO_IN" =~ ^[0-9a-fA-F-]{36}$ ]]; then
             REPO_ID="$REPO_IN"
             echo "Using provided repo GUID: $REPO_ID"
