@@ -10,39 +10,112 @@ on:
   workflow_dispatch:
 
 env:
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.' # set this to the path to your web app project, defaults to the repository root
-  DOTNET_VERSION: '8.0.x' # set this to the dotnet version to use
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
+  DOTNET_VERSION: '8.0.x'
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write #This is required for requesting the JWT
-      contents: read #This is required for actions/checkout
+      id-token: write
+      contents: read
 
     steps:
-      - name: 'Checkout GitHub Action'
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup DotNet ${{ env.DOTNET_VERSION }} Environment
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
         uses: actions/setup-dotnet@v1
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: 'Resolve Project Dependencies Using Dotnet'
+      # === HENT README-FILER FRA AZURE DEVOPS OG PUSH DEM TIL AZURE AI SEARCH ===
+      - name: Fetch Kemibrug READMEs from Azure DevOps and build docs.json
+        shell: bash
+        env:
+          AZDO_ORG_URL: ${{ secrets.AZURE_DEVOPS_ORG_URL }}
+          AZDO_PROJECT: ${{ secrets.AZUREDEVOPSPROJECT }}
+          AZDO_REPO:    ${{ secrets.AZUREDEVOPSREPOSITORYNAME }}  # kan være navn eller ID
+          AZDO_PAT:     ${{ secrets.AZURE_DEVOPS_PAT }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y && sudo apt-get install -y jq
+
+          # Tilpas paths hvis dine README'er ligger andre steder:
+          declare -A FILES
+          FILES["/src/KemibrugV2.Application/README.md"]="Application"
+          FILES["/src/KemibrugV2.Core/README.md"]="Core"
+          FILES["/src/KemibrugV2.Infrastructure/README.md"]="Infrastructure"
+          FILES["/src/KemibrugV2.WebApiServer/README.md"]="WebApiServer"
+
+          PROJECT="KemibrugV2"
+
+          fetch_file () {
+            local path="$1"
+            curl -sS -u :$AZDO_PAT \
+              "${AZDO_ORG_URL}/${AZDO_PROJECT}/_apis/git/repositories/${AZDO_REPO}/items?path=${path}&includeContent=true&api-version=7.1-preview.1"
+          }
+
+          echo "[" > docs.json
+          first=1
+          for path in "${!FILES[@]}"; do
+            layer="${FILES[$path]}"
+            resp=$(fetch_file "$path")
+            content=$(echo "$resp" | jq -r '.content // empty')
+            if [ -z "$content" ]; then
+              echo "WARN: File not found in ADO: $path" >&2
+              continue
+            fi
+            id=$(echo "$path" | sed 's/[^a-zA-Z0-9._-]/_/g')
+
+            entry=$(jq -n \
+              --arg id "$id" \
+              --arg content "$content" \
+              --arg path "$path" \
+              --arg layer "$layer" \
+              --arg project "$PROJECT" \
+              '{ "@search.action":"mergeOrUpload", id:$id, content:$content, path:$path, layer:$layer, project:$project }')
+
+            if [ $first -eq 0 ]; then echo "," >> docs.json; fi
+            echo "$entry" >> docs.json
+            first=0
+          done
+          echo "]" >> docs.json
+
+          echo "Built docs.json:"
+          jq '.[].id' docs.json
+
+      - name: Push docs to Azure AI Search
+        shell: bash
+        env:
+          SEARCH_ENDPOINT: ${{ secrets.AZURE_SEARCH_ENDPOINT }}   # e.g. https://search-kemibrug.search.windows.net
+          SEARCH_INDEX:    ${{ secrets.AZURE_SEARCH_INDEX }}      # e.g. kemibrug-rules
+          SEARCH_KEY:      ${{ secrets.AZURE_SEARCH_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          curl -sS -X POST \
+            -H "Content-Type: application/json" \
+            -H "api-key: ${SEARCH_KEY}" \
+            --data @docs.json \
+            "${SEARCH_ENDPOINT}/indexes/${SEARCH_INDEX}/docs/index?api-version=2023-11-01"
+          echo "Uploaded README docs to Azure AI Search."
+
+      # === BYG FUNKTION ===
+      - name: Build
         shell: pwsh
         run: |
           pushd './${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}'
           dotnet build --configuration Release --output ./output
           popd
-      
+
       - name: Login to Azure
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_CC61583FBBEC4600B796FAECBE66F119 }}
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_4FAB11EB01304BE09563B7410BD1E837 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_BE4AA3B5668B4EFD94873CB496000E0A }}
-        
+
+      # === APP SETTINGS (inkl. retrieval + systemprompt) ===
       - name: Configure app settings
         uses: azure/CLI@v1
         with:
@@ -56,18 +129,16 @@ jobs:
                 AzureDevOpsProject='${{ secrets.AZUREDEVOPSPROJECT }}' \
                 AzureDevOpsRepositoryName='${{ secrets.AZUREDEVOPSREPOSITORYNAME }}' \
                 AzureOpenAIEndpoint='${{ secrets.AZURE_OPENAI_ENDPOINT }}' \
-                AzureOpenAIApiKey='${{ secrets.AZURE_OPENAI_APIKEY }}'
+                AzureOpenAIApiKey='${{ secrets.AZURE_OPENAI_APIKEY }}' \
+                AzureSearchEndpoint='${{ secrets.AZURE_SEARCH_ENDPOINT }}' \
+                AzureSearchIndex='${{ secrets.AZURE_SEARCH_INDEX }}' \
+                AzureSearchApiKey='${{ secrets.AZURE_SEARCH_ADMIN_KEY }}' \
+                AnalysisSystemPromptV2='${{ secrets.ANALYSIS_SYSTEM_PROMPT_V2 }}'
 
-      - name: 'Run Azure Functions Action'
+      - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
         id: fa
         with:
           app-name: 'kemibrug-ai-assistant'
           slot-name: 'Production'
           package: '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output'
-
-          
-
-
-
-
