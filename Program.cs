@@ -43,7 +43,6 @@ var host = new HostBuilder()
         // === PR REVIEW FLOW REGISTRATIONS ===
 
         services.AddSingleton<PullRequestTrigger>();
-        services.AddSingleton<DeterminePrLayerActivity>();
         services.AddSingleton<GetPullRequestChangesActivity>();
         services.AddSingleton<AnalyzeCodeActivity>();
         services.AddSingleton<PostAnalysisCommentActivity>();
