@@ -50,6 +50,7 @@ var host = new HostBuilder()
         services.AddSingleton<IContextRetrievalService, ContextRetrievalService>();
         services.AddSingleton<IAnalysisResultParser, AnalysisResultParser>();
         services.AddSingleton<IMarkdownCommentBuilder, MarkdownCommentBuilder>();
+        services.AddSingleton<ILayerInferenceService, LayerInferenceService>();
 
     })
     .Build();
