@@ -19,7 +19,7 @@ var host = new HostBuilder()
         services.AddAzureClients(clientBuilder =>
         {
             var openAiEndpoint = Environment.GetEnvironmentVariable("AzureOpenAIEndpoint");
-            var openAiKey = Environment.GetEnvironmentVariable("AzureOpenAIKey");
+            var openAiKey = Environment.GetEnvironmentVariable("AzureOpenAIApiKey");
 
             if (!string.IsNullOrEmpty(openAiEndpoint) && !string.IsNullOrEmpty(openAiKey))
             {
