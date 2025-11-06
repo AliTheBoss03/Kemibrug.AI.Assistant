@@ -39,7 +39,7 @@ namespace Kemibrug.AI.Assistant
                 throw new InvalidOperationException("OpenAI service is not configured in the application.");
             }
 
-            var deploymentName = Environment.GetEnvironmentVariable("AzureOpenAIDeploymentName");
+            var deploymentName = "gpt-4o";
             if (string.IsNullOrEmpty(deploymentName))
             {
                 throw new InvalidOperationException("Configuration error: AzureOpenAIDeploymentName is not set.");

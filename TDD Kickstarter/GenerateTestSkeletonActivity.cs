@@ -38,7 +38,7 @@ namespace Kemibrug.AI.Assistant
                 return _skeletonBuilder.Build(analyzedStory.ClassName, analyzedStory.TestMethods);
             }
 
-            var deploymentName = Environment.GetEnvironmentVariable("AzureOpenAIDeploymentName");
+            var deploymentName = "gpt-4o";
             if (string.IsNullOrEmpty(deploymentName))
             {
                 throw new InvalidOperationException("Configuration error: AzureOpenAIDeploymentName is not set.");
