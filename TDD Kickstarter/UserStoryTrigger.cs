@@ -1,10 +1,11 @@
-﻿using Kemibrug.AI.Assistant.Models;
-using Microsoft.Azure.Functions.Worker;
+﻿using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.DurableTask.Client;
 using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Text.Json;
+using System.Threading.Tasks;
+using Kemibrug.AI.Assistant.Models;
 
 namespace Kemibrug.AI.Assistant
 {
@@ -22,43 +23,46 @@ namespace Kemibrug.AI.Assistant
             [HttpTrigger(AuthorizationLevel.Anonymous, "post")] HttpRequestData req,
             [DurableClient] DurableTaskClient client)
         {
-            int? workItemId = await TryExtractWorkItemId(req);
+            string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
+            int? extractedId = TryExtractWorkItemId(requestBody);
 
-            if (workItemId is null or <= 0)
+            if (extractedId is null or <= 0)
             {
-                _logger.LogError("Could not extract a valid User Story ID from the request body.");
+                _logger.LogError("Could not extract a valid User Story ID from the request body. Body: {requestBody}", requestBody);
                 return req.CreateResponse(HttpStatusCode.BadRequest);
             }
 
-            string instanceId = await client.ScheduleNewOrchestrationInstanceAsync("TddKickstarterOrchestrator", workItemId.Value);
-            _logger.LogInformation("Started TDD orchestration for User Story ID {id}. Instance ID: {instanceId}", workItemId.Value, instanceId);
+            var workItemId = extractedId.Value;
+            string instanceId = await client.ScheduleNewOrchestrationInstanceAsync("TddKickstarterOrchestrator", workItemId);
+            _logger.LogInformation("Started TDD orchestration for User Story ID {id}. Instance ID: {instanceId}", workItemId, instanceId);
 
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
-        private async Task<int?> TryExtractWorkItemId(HttpRequestData req)
+        private int? TryExtractWorkItemId(string requestBody)
         {
-            string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
             if (string.IsNullOrEmpty(requestBody))
             {
                 _logger.LogWarning("Request body was empty.");
                 return null;
             }
 
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
             try
             {
-                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                var payload = JsonSerializer.Deserialize<WebhookPayload>(requestBody, options);
-
-                // Logic to find the ID from the unified payload
-                return payload?.Id ?? payload?.Resource?.WorkItemId ?? payload?.Resource?.ResourceId;
+                var fullWebhook = JsonSerializer.Deserialize<AzureDevOpsWebhook>(requestBody, options);
+                if (fullWebhook?.Resource?.Id > 0)
+                {
+                    _logger.LogInformation("Extracted work item ID from full webhook payload.");
+                    return fullWebhook.Resource.Id;
+                }
             }
-            catch (JsonException ex)
+            catch (JsonException)
             {
-                // Log the actual exception
-                _logger.LogError(ex, "Failed to deserialize request body. Body: {body}", requestBody);
-                return null;
             }
+
+            return null;
         }
     }
 }
