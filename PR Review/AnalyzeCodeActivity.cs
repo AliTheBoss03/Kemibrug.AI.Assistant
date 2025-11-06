@@ -30,7 +30,7 @@ namespace Kemibrug.AI.Assistant.PR_Review
         [Function(nameof(AnalyzeCodeActivity))]
         public async Task<string> Run([ActivityTrigger] AnalysisInput input)
         {
-            var deploymentName = GetRequiredEnvironmentVariable("AzureOpenAIDeploymentName");
+            var deploymentName = "gpt-4o";
             var systemPrompt = GetRequiredEnvironmentVariable("AnalysisSystemPromptV2");
 
             try
