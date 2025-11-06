@@ -5,6 +5,7 @@ using Azure;
 using Azure.AI.OpenAI;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+using Kemibrug.AI.Assistant.Models.PR_Review;
 
 namespace Kemibrug.AI.Assistant.PR_Review
 {
@@ -12,7 +13,6 @@ namespace Kemibrug.AI.Assistant.PR_Review
     public class AnalyzeCodeActivity
     {
         private readonly OpenAIClient _openAIClient;
-        private readonly ILayerInferenceService _layerInference;
         private readonly IContextRetrievalService _contextRetrieval;
         private readonly ILogger<AnalyzeCodeActivity> _logger;
 
@@ -23,27 +23,24 @@ namespace Kemibrug.AI.Assistant.PR_Review
             ILogger<AnalyzeCodeActivity> logger)
         {
             _openAIClient = openAIClient;
-            _layerInference = layerInference;
             _contextRetrieval = contextRetrieval;
             _logger = logger;
         }
 
         [Function(nameof(AnalyzeCodeActivity))]
-        public async Task<string> Run([ActivityTrigger] string codeToAnalyze)
+        public async Task<string> Run([ActivityTrigger] AnalysisInput input)
         {
             var deploymentName = GetRequiredEnvironmentVariable("AzureOpenAIDeploymentName");
             var systemPrompt = GetRequiredEnvironmentVariable("AnalysisSystemPromptV2");
 
             try
             {
-                var inferredLayer = _layerInference.InferLayer(codeToAnalyze);
-                _logger.LogInformation("Inferred layer for analysis: {layer}", inferredLayer);
+                _logger.LogInformation("Analyzing code for layer: {layer}", input.InferredLayer);
 
-                var readmeContext = await _contextRetrieval.GetContextForLayerAsync(inferredLayer);
+                var readmeContext = await _contextRetrieval.GetContextForLayerAsync(input.InferredLayer);
 
-                var options = BuildChatOptions(deploymentName, systemPrompt, inferredLayer, readmeContext, codeToAnalyze);
+                var options = BuildChatOptions(deploymentName, systemPrompt, input.InferredLayer, readmeContext, input.CodeToAnalyze);
 
-                _logger.LogInformation("Sending analysis request to OpenAI for layer {layer}.", inferredLayer);
                 Response<ChatCompletions> resp = await _openAIClient.GetChatCompletionsAsync(options);
                 string content = resp.Value.Choices[0].Message.Content ?? string.Empty;
 

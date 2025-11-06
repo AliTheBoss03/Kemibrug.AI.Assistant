@@ -25,33 +25,33 @@ namespace Kemibrug.AI.Assistant
 
             try
             {
-                var layer = await context.CallActivityAsync<string>(
-                    nameof(DeterminePrLayerActivity),
-                    input.SourceRefName);
-
-                if (string.IsNullOrEmpty(layer))
-                {
-                    logger.LogWarning("Could not determine a target layer for PR {prId}. Ending orchestration.", input.PullRequestId);
-                    return "Orchestration complete: No target layer found.";
-                }
-
-                logger.LogInformation("Step 1: Fetching file changes from DevOps for layer '{layer}'.", layer);
+                logger.LogInformation("Step 1: Fetching file changes from DevOps.");
                 var codeChanges = await context.CallActivityAsync<string>(
                     nameof(GetPullRequestChangesActivity),
                     input);
 
                 if (string.IsNullOrWhiteSpace(codeChanges))
                 {
-                    logger.LogInformation("No relevant C# file changes found for PR {prId}. Orchestration ending.", input.PullRequestId);
+                    logger.LogInformation("No relevant C# file changes found. Orchestration ending.");
                     return "Orchestration complete: No changes to analyze.";
                 }
 
-                logger.LogInformation("Step 2: Analyzing code changes.");
-                var analysisResultJson = await context.CallActivityAsync<string>(
-                    nameof(AnalyzeCodeActivity),
+                logger.LogInformation("Step 2: Inferring layer from file paths.");
+                var inferredLayer = await context.CallActivityAsync<string>(
+                    nameof(InferLayerFromChangesActivity),
                     codeChanges);
 
-                logger.LogInformation("Step 3: Posting analysis results to PR.");
+                logger.LogInformation("Step 3: Analyzing code changes for layer '{layer}'.", inferredLayer);
+                var analysisInput = new AnalysisInput
+                {
+                    CodeToAnalyze = codeChanges,
+                    InferredLayer = inferredLayer
+                };
+                var analysisResultJson = await context.CallActivityAsync<string>(
+                    nameof(AnalyzeCodeActivity),
+                    analysisInput);
+
+                logger.LogInformation("Step 4: Posting analysis results to PR.");
                 var postCommentInput = new PostAnalysisCommentInput
                 {
                     PullRequestId = input.PullRequestId,
