@@ -4,28 +4,60 @@ using Microsoft.DurableTask.Client;
 using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Text.Json;
-using Kemibrug.AI.Assistant.Models;
+using System.Text.Json.Serialization;
 
 namespace Kemibrug.AI.Assistant
 {
     public class UserStoryTrigger
     {
+        private sealed class IdOnly { public int Id { get; set; } }
+        private sealed class ServiceHookPayload
+        {
+            public ResourceObj? Resource { get; set; }
+            public sealed class ResourceObj
+            {
+                [JsonPropertyName("workItemId")] public int? WorkItemId { get; set; }
+                [JsonPropertyName("id")] public int? Id { get; set; }
+            }
+        }
+
         [Function("UserStoryTrigger")]
         public static async Task<HttpResponseData> Run(
             [HttpTrigger(AuthorizationLevel.Anonymous, "post")] HttpRequestData req,
             [DurableClient] DurableTaskClient client,
-            FunctionContext executionContext)
+            FunctionContext ctx)
         {
-            var logger = executionContext.GetLogger("UserStoryTrigger");
-            string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
-            var input = JsonSerializer.Deserialize<IdInput>(requestBody);
+            var log = ctx.GetLogger("UserStoryTrigger");
+            var body = await new StreamReader(req.Body).ReadToEndAsync();
 
-            if (input?.Id == 0) return req.CreateResponse(HttpStatusCode.BadRequest);
+            int extractedId = 0;
 
-            string instanceId = await client.ScheduleNewOrchestrationInstanceAsync(
-                "TddKickstarterOrchestrator", input.Id);
+            try
+            {
+                var asId = JsonSerializer.Deserialize<IdOnly>(body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (asId?.Id > 0) extractedId = asId.Id;
+            }
+            catch {  }
 
-            logger.LogInformation("Started TDD orchestration for User Story ID {id} with instance ID = '{instanceId}'.", input.Id, instanceId);
+            if (extractedId == 0)
+            {
+                try
+                {
+                    var hook = JsonSerializer.Deserialize<ServiceHookPayload>(body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    extractedId = hook?.Resource?.WorkItemId ?? hook?.Resource?.Id ?? 0;
+                }
+                catch { }
+            }
+
+            if (extractedId <= 0)
+            {
+                log.LogError("Could not extract User Story ID from request body.");
+                return req.CreateResponse(HttpStatusCode.BadRequest);
+            }
+
+            var instanceId = await client.ScheduleNewOrchestrationInstanceAsync("TddKickstarterOrchestrator", extractedId);
+            log.LogInformation("Started TDD orchestration for User Story ID {id}. Instance = {instanceId}", extractedId, instanceId);
+
             return req.CreateResponse(HttpStatusCode.OK);
         }
     }
