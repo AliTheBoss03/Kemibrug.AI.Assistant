@@ -222,7 +222,8 @@ jobs:
                 AzureSearchEndpoint='${{ secrets.AZURE_SEARCH_ENDPOINT }}' \
                 AzureSearchIndex='${{ secrets.AZURE_SEARCH_INDEX }}' \
                 AzureSearchApiKey='${{ secrets.AZURE_SEARCH_ADMIN_KEY }}' \
-                AnalysisSystemPromptV2='${{ secrets.ANALYSIS_SYSTEM_PROMPT_V2 }}'
+                AnalysisSystemPromptV2='${{ secrets.ANALYSIS_SYSTEM_PROMPT_V2 }}'\
+                AzureDevOpsProjectName='${{ secrets.AzureDevOpsProjectName }}'
 
       - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
@@ -230,6 +231,7 @@ jobs:
           app-name: 'kemibrug-ai-assistant'
           slot-name: 'Production'
           package: '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output'
+
 
 
 
