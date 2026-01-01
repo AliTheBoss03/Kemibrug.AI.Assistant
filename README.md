@@ -46,27 +46,19 @@ The solution is built on a modern, serverless, and event-driven architecture, pr
 ### System Architecture Diagram
 *(This diagram illustrates the data flow from Azure DevOps events through the AI assistant's functions and back to the external services.)*
 
-**[INSERT SCREENSHOT HERE of "Figur 2: Systemarkitektur for AI-assistenten" from your report]**
+![System Architecture Diagram](assets/ArkitekturDiagram.png)
 
 ## 🚀 Demo & Screenshots
 
 ### TDD Kickstarter in Action
 *A generated C# xUnit test skeleton attached directly to the User Story in Azure DevOps.*
 
-**[INSERT SCREENSHOT HERE of "Figur 10: Testfil vedhæftet i bilag for User story 1005" from your report]**
+![TDD Kickstarter Demo](assets/Attached-TestFile-US1.png)
 
 ### Automated PR Analysis in Action
 *An automated comment posted by the AI assistant on a Pull Request, identifying architectural violations.*
 
-**[INSERT SCREENSHOT HERE of "Figur 12: Kommentar i Azure Devops der viser fundne arkitektur-brud" from your report]**
-
-## 🔧 Setup and Installation
-
-*(This section would typically contain instructions on how to set up the project locally, including environment variables, dependencies, and how to configure the Azure DevOps webhooks.)*
-
-1.  Clone the repository.
-2.  Configure `local.settings.json` with the required Azure service keys and DevOps PAT.
-3.  ...
+![Automated PR Analysis Demo](assets/T-B3-comment.png)
 
 ## 🙏 Acknowledgments
 
