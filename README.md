@@ -62,4 +62,4 @@ The solution is built on a modern, serverless, and event-driven architecture, pr
 
 ## 🙏 Acknowledgments
 
-A special thanks to my supervisor, **Lars Sommer**, and the entire **DTU ITAM** and **Kemibrug** teams for their invaluable guidance, feedback, and for providing the real-world context that made this project possible.```
+A special thanks to my supervisor, **Lars Sommer**, and the entire **DTU ITAM** and **Kemibrug** teams for their invaluable guidance, feedback, and for providing the real-world context that made this project possible.
